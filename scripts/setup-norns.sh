@@ -11,7 +11,7 @@ NORNS_HOME="$CHROOT/home/we"
 BUILD_FROM_SOURCE="${NORNS_BUILD_FROM_SOURCE:-0}"
 
 # Pre-built binary URL — update this when publishing a new release
-PREBUILT_URL="${NORNS_PREBUILT_URL:-https://github.com/YOUR_USER/move-everything-norns/releases/latest/download/norns-move-prebuilt.tar.gz}"
+PREBUILT_URL="https://github.com/djhardrich/move-everything-norns/releases/download/v0.1.0/norns-move-prebuilt.tar.gz"
 
 if [ ! -d "$CHROOT/usr" ]; then
     echo "ERROR: Chroot not found at $CHROOT" >&2
