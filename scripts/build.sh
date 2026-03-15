@@ -11,6 +11,8 @@ if [ ! -f /.dockerenv ]; then
     echo "=== Building Docker image ==="
     docker build -t "$IMAGE_NAME" -f "$SCRIPT_DIR/Dockerfile" "$REPO_ROOT"
 
+    rm -rf "$REPO_ROOT/build" "$REPO_ROOT/dist"
+
     echo "=== Running build inside container ==="
     docker run --rm \
         -v "$REPO_ROOT:/build" \
@@ -56,14 +58,17 @@ cp src/restart-norns.sh  build/module/
 chmod +x build/module/start-norns.sh build/module/stop-norns.sh build/module/restart-norns.sh
 
 mkdir -p build/module/bin
-cp build/pw-helper           build/module/bin/
-cp build/norns-input-bridge  build/module/bin/
-cp build/jack-fifo-bridge    build/module/bin/
+cat build/pw-helper > build/module/bin/pw-helper
+chmod +x build/module/bin/pw-helper
+cat build/norns-input-bridge > build/module/bin/norns-input-bridge
+chmod +x build/module/bin/norns-input-bridge
+cat build/jack-fifo-bridge > build/module/bin/jack-fifo-bridge
+chmod +x build/module/bin/jack-fifo-bridge
 
 # ── Package ──
+rm -rf dist
 mkdir -p dist
-rm -rf dist/norns
-cp -r build/module dist/norns
+tar -cf - -C build module | tar -xf - -C dist && mv dist/module dist/norns
 
 (cd dist && tar -czvf "${OUTPUT_BASENAME}.tar.gz" norns/)
 
