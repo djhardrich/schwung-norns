@@ -240,7 +240,7 @@ s.close()
     if [ -x "$CHROOT/home/we/maiden/maiden" ]; then
         chrt -o 0 chroot "$CHROOT" su - move -c "
             cd /home/we/maiden
-            nohup ./maiden server --port 5000 --data /home/we/dust --app /home/we/maiden/app --doc /home/we/norns/doc >/dev/null 2>&1 &
+            nohup ./maiden server --port 5000 --data /home/we/dust --app /home/we/maiden/app/build --doc /home/we/norns/doc >/dev/null 2>&1 &
             echo \$! > /tmp/norns-pids-${SLOT}/maiden.pid
         "
     fi

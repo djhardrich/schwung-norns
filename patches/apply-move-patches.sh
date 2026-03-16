@@ -672,6 +672,23 @@ case "$WAF_VERSION" in
         ;;
 esac
 
+# ── 10. Create Move-specific matronrc.lua ──
+echo "  Creating Move-specific matronrc.lua"
+cat > matronrc.lua << 'MATRONRC'
+-- matronrc.lua — Move-specific norns configuration
+-- FIFO-based I/O: screen, input, and grid are handled by
+-- the FIFO drivers compiled into matron (no GPIO/evdev needed).
+
+function init_norns()
+  _boot.add_io("keys:fifo", {})
+  _boot.add_io("enc:fifo",  {index=1})
+  _boot.add_io("enc:fifo",  {index=2})
+  _boot.add_io("enc:fifo",  {index=3})
+end
+
+init_norns()
+MATRONRC
+
 echo ""
 echo "=== Patches applied ==="
 echo "Now rebuild:"

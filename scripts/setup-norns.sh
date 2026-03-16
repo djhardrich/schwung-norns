@@ -66,6 +66,12 @@ echo "--- Setting up norns user home ---"
 mkdir -p "$NORNS_HOME"
 chown 1000:1000 "$NORNS_HOME"
 
+# Ensure move user's home is /home/we (norns expects $HOME/norns, $HOME/dust, etc.)
+if chroot "$CHROOT" grep -q "^move:.*:/home/move:" /etc/passwd 2>/dev/null; then
+    sed -i "s|move:x:1000:1000::/home/move:|move:x:1000:1000::/home/we:|" "$CHROOT/etc/passwd"
+    echo "  Fixed move user home → /home/we"
+fi
+
 if [ "$BUILD_FROM_SOURCE" = "1" ]; then
     echo "--- Cloning and building norns from source ---"
     chrt -o 0 chroot "$CHROOT" su - move -c '
@@ -138,6 +144,26 @@ else
         rm -f norns-prebuilt.tar.gz
     "
     echo "  Pre-built binaries installed"
+fi
+
+# Ensure Move-specific matronrc.lua exists (FIFO drivers, not GPIO)
+if [ ! -f "$CHROOT/home/we/norns/matronrc.lua" ]; then
+    cat > "$CHROOT/home/we/norns/matronrc.lua" << 'MATRONRC'
+-- matronrc.lua — Move-specific norns configuration
+-- FIFO-based I/O: screen, input, and grid are handled by
+-- the FIFO drivers compiled into matron (no GPIO/evdev needed).
+
+function init_norns()
+  _boot.add_io("keys:fifo", {})
+  _boot.add_io("enc:fifo",  {index=1})
+  _boot.add_io("enc:fifo",  {index=2})
+  _boot.add_io("enc:fifo",  {index=3})
+end
+
+init_norns()
+MATRONRC
+    chown 1000:1000 "$CHROOT/home/we/norns/matronrc.lua"
+    echo "  Created Move-specific matronrc.lua"
 fi
 
 echo "--- Setting up dust directory ---"
@@ -214,6 +240,33 @@ context.properties = {
     default.clock.max-quantum   = 1024
 }
 PWEOF
+
+# Dummy audio sink/source — creates system:playback_*/capture_* JACK ports.
+# Move has no ALSA device inside the chroot, but crone requires system:playback
+# ports to connect its output during startup.
+cat > "$CHROOT/etc/pipewire/pipewire.conf.d/dummy-audio.conf" << 'DUMMYEOF'
+context.objects = [
+    {   factory = adapter
+        args = {
+            factory.name     = support.null-audio-sink
+            node.name        = "system"
+            media.class      = "Audio/Sink"
+            object.linger    = true
+            audio.position   = [ FL FR ]
+            monitor.channel-volumes = true
+        }
+    }
+    {   factory = adapter
+        args = {
+            factory.name     = support.null-audio-sink
+            node.name        = "system"
+            media.class      = "Audio/Source/Virtual"
+            object.linger    = true
+            audio.position   = [ FL FR ]
+        }
+    }
+]
+DUMMYEOF
 
 echo ""
 echo "=== Norns Setup Complete ==="

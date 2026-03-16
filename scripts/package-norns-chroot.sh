@@ -113,6 +113,8 @@ tar czf "$OUT" \
     norns/build/maiden-repl/maiden-repl \
     norns/build/ws-wrapper/ws-wrapper \
     norns/build/watcher/watcher \
+    norns/matronrc.lua \
+    norns/resources/ \
     norns/lua/ \
     norns/sc/ \
     norns/doc/ \
