@@ -46,7 +46,7 @@ chroot "$CHROOT" apt-get install -y --no-install-recommends \
     lua-posix lua-sec lua-lpeg-patterns \
     wget curl netcat-openbsd socat rsync \
     unzip zip sox libsox-fmt-all ffmpeg \
-    file bc jq python3-pip
+    file bc jq python3-pip git
 
 # Only install dev packages if building from source
 if [ "$BUILD_FROM_SOURCE" = "1" ]; then
@@ -81,8 +81,8 @@ if [ "$BUILD_FROM_SOURCE" = "1" ]; then
     if [ -f "$CHROOT/home/we/norns/patches/apply-move-patches.sh" ]; then
         chrt -o 0 chroot "$CHROOT" su - move -c \
             "cd /home/we/norns && sh patches/apply-move-patches.sh"
-    elif [ -f /data/UserData/move-anything/modules/sound_generators/norns/patches/apply-move-patches.sh ]; then
-        cp /data/UserData/move-anything/modules/sound_generators/norns/patches/apply-move-patches.sh \
+    elif [ -f /data/UserData/move-anything/modules/tools/norns/patches/apply-move-patches.sh ]; then
+        cp /data/UserData/move-anything/modules/tools/norns/patches/apply-move-patches.sh \
             "$CHROOT/tmp/apply-move-patches.sh"
         chrt -o 0 chroot "$CHROOT" su - move -c \
             "cd /home/we/norns && sh /tmp/apply-move-patches.sh"
@@ -106,6 +106,16 @@ if [ "$BUILD_FROM_SOURCE" = "1" ]; then
         mkdir -p /home/we/go-cache
         GOCACHE=/home/we/go-cache GOTMPDIR=/home/we/go-cache go build -o maiden .
     '
+    # Download pre-built Maiden web UI (React app — building requires Node.js/yarn)
+    if [ ! -d "$CHROOT/home/we/maiden/app" ]; then
+        echo "--- Downloading Maiden web UI ---"
+        chroot "$CHROOT" su - move -c "
+            cd /home/we
+            curl -fsSL '$PREBUILT_URL' -o /tmp/maiden-ui.tar.gz
+            tar xzf /tmp/maiden-ui.tar.gz maiden/app
+            rm /tmp/maiden-ui.tar.gz
+        "
+    fi
 else
     echo "--- Downloading pre-built norns binaries ---"
     if echo "$PREBUILT_URL" | grep -q "YOUR_USER"; then
@@ -114,11 +124,14 @@ else
         exit 1
     fi
 
-    cd "$NORNS_HOME"
-    curl -fsSL "$PREBUILT_URL" -o /tmp/norns-prebuilt.tar.gz
-    tar xzf /tmp/norns-prebuilt.tar.gz
-    rm -f /tmp/norns-prebuilt.tar.gz
-    chown -R 1000:1000 "$NORNS_HOME/norns" "$NORNS_HOME/maiden"
+    # Run curl inside chroot where it's installed (host BusyBox lacks curl)
+    chroot "$CHROOT" sh -c "
+        cd /home/we
+        curl -fsSL '$PREBUILT_URL' -o /tmp/norns-prebuilt.tar.gz
+        tar xzf /tmp/norns-prebuilt.tar.gz
+        rm -f /tmp/norns-prebuilt.tar.gz
+        chown -R 1000:1000 /home/we/norns /home/we/maiden
+    "
     echo "  Pre-built binaries installed"
 fi
 
@@ -130,14 +143,12 @@ chrt -o 0 chroot "$CHROOT" su - move -c '
 echo "--- Installing starter scripts ---"
 chrt -o 0 chroot "$CHROOT" su - move -c '
     cd /home/we/dust/code
-    if [ ! -d awake ]; then
-        git clone https://github.com/monome/awake.git
-    fi
-    if [ ! -d molly_the_poly ]; then
-        git clone https://github.com/markwheeler/molly_the_poly.git
-    fi
-    if [ ! -d passersby ]; then
-        git clone https://github.com/markwheeler/passersby.git
+    if which git >/dev/null 2>&1; then
+        [ ! -d awake ] && git clone https://github.com/tehn/awake.git || true
+        [ ! -d molly_the_poly ] && git clone https://github.com/markwheeler/molly_the_poly.git || true
+        [ ! -d passersby ] && git clone https://github.com/markwheeler/passersby.git || true
+    else
+        echo "  git not installed — install scripts via Maiden"
     fi
 '
 
@@ -145,23 +156,24 @@ echo "--- Creating sclang_conf.yaml ---"
 # sclang needs explicit include paths to find norns core classes and
 # user-installed engines in dust/code/. Without this, sclang only loads
 # the system SC class library and no norns engines are available.
-cat > "$NORNS_HOME/norns/sclang_conf.yaml" << 'SCCONF'
+mkdir -p "$NORNS_HOME/.config/SuperCollider"
+cat > "$NORNS_HOME/.config/SuperCollider/sclang_conf.yaml" << 'SCCONF'
 includePaths:
     - /home/we/norns/sc/core
     - /home/we/norns/sc/engines
-    - /home/we/norns/sc
     - /home/we/dust
 excludePaths:
     []
 postInlinePaths: []
 SCCONF
-chown 1000:1000 "$NORNS_HOME/norns/sclang_conf.yaml"
+chown -R 1000:1000 "$NORNS_HOME/.config"
 
-echo "--- Configuring scsynth for 44100 Hz ---"
+echo "--- Configuring scsynth for 48000 Hz ---"
 mkdir -p "$NORNS_HOME/norns/sc"
 cat > "$NORNS_HOME/norns/sc/startup.scd" << 'SCDEOF'
-// Auto-generated for Move — force 44100 Hz sample rate
-s.options.sampleRate = 44100;
+// Auto-generated for Move — force 48000 Hz sample rate
+s.options.sampleRate = 48000;
+s.options.protocol = \udp;
 SCDEOF
 chown 1000:1000 "$NORNS_HOME/norns/sc/startup.scd"
 
