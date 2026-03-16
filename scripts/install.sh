@@ -15,8 +15,20 @@ echo ""
 
 # ── Install module files ──
 if [ ! -d "$DIST_DIR" ]; then
-    echo "Error: $DIST_DIR not found. Run ./scripts/build.sh first."
-    exit 1
+    # Look for a release tarball to extract
+    TARBALL=""
+    for f in "$REPO_ROOT/dist/"*norns*.tar.gz; do
+        [ -f "$f" ] && TARBALL="$f" && break
+    done
+    if [ -n "$TARBALL" ]; then
+        echo "Extracting $(basename "$TARBALL") ..."
+        tar -xzf "$TARBALL" -C "$REPO_ROOT/dist/"
+    fi
+    if [ ! -d "$DIST_DIR" ]; then
+        echo "Error: $DIST_DIR not found."
+        echo "Either run ./scripts/build.sh or place a release tar.gz in dist/"
+        exit 1
+    fi
 fi
 
 echo "--- Deploying module to $REMOTE_MODULE ---"
@@ -26,6 +38,7 @@ ssh "root@$DEVICE_HOST" "chmod +x $REMOTE_MODULE/start-norns.sh $REMOTE_MODULE/s
 
 # ── Install pw-helper (setuid root) ──
 PW_HELPER="$REPO_ROOT/build/pw-helper"
+[ ! -f "$PW_HELPER" ] && PW_HELPER="$DIST_DIR/bin/pw-helper"
 if [ -f "$PW_HELPER" ]; then
     echo ""
     echo "--- Installing pw-helper (setuid root) ---"
@@ -37,6 +50,7 @@ fi
 
 # ── Install norns-input-bridge to chroot ──
 INPUT_BRIDGE="$REPO_ROOT/build/norns-input-bridge"
+[ ! -f "$INPUT_BRIDGE" ] && INPUT_BRIDGE="$DIST_DIR/bin/norns-input-bridge"
 if [ -f "$INPUT_BRIDGE" ]; then
     echo ""
     echo "--- Installing norns-input-bridge to chroot ---"
@@ -48,6 +62,7 @@ fi
 
 # ── Install jack-fifo-bridge to chroot ──
 JACK_BRIDGE="$REPO_ROOT/build/jack-fifo-bridge"
+[ ! -f "$JACK_BRIDGE" ] && JACK_BRIDGE="$DIST_DIR/bin/jack-fifo-bridge"
 if [ -f "$JACK_BRIDGE" ]; then
     echo ""
     echo "--- Installing jack-fifo-bridge to chroot ---"
