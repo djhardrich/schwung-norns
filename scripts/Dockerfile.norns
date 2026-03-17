@@ -1,0 +1,35 @@
+# Build norns (matron, crone, maiden) for Move in Docker
+# Native arm64 on Apple Silicon — no QEMU needed
+FROM --platform=linux/arm64 debian:sid-slim
+
+# Runtime + build deps (matches setup-norns.sh apt packages)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Runtime deps
+    supercollider-server supercollider-language \
+    sc3-plugins-server sc3-plugins-language \
+    liblua5.3-0 libcairo2 liblo7 libevdev2 \
+    libasound2t64 libsndfile1 libjack-jackd2-0 \
+    libnanomsg5 libavahi-compat-libdnssd1 \
+    libncursesw6 \
+    lua5.3 lua-lpeg lua-cjson lua-socket lua-filesystem \
+    lua-posix lua-sec lua-lpeg-patterns \
+    git wget curl rsync unzip zip sox libsox-fmt-all ffmpeg \
+    file bc jq python3-pip \
+    # Build deps
+    liblua5.3-dev libcairo2-dev liblo-dev libevdev-dev \
+    libasound2-dev libsndfile1-dev libjack-jackd2-dev \
+    libnanomsg-dev libavahi-compat-libdnssd-dev libudev-dev \
+    libglib2.0-dev \
+    libncurses-dev libncursesw5-dev \
+    gcc g++ cmake python3 python3-zombie-imp \
+    golang \
+    nodejs npm \
+    ca-certificates \
+    && npm install -g yarn \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create norns user (uid 1000 = "we"/"move")
+RUN useradd -m -d /home/we -u 1000 -s /bin/bash we
+
+USER we
+WORKDIR /home/we
