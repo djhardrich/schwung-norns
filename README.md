@@ -141,7 +141,7 @@ Most Norns scripts work. Known limitations:
 - **No audio input** — Move's mic/line-in is not bridged to Norns
 - **No USB MIDI devices** — only Move's own pads/knobs are available as MIDI input
 - **No real Monome grid** — the grid emulator covers basic grid scripts but is 8x4 (paged) not 16x8 simultaneous
-- **32-bit SC plugins auto-removed** — scripts that install PortedPlugins (e.g. AmenBreak) will have those plugins automatically stripped at startup to prevent crashes on Move's 64-bit ARM. The scripts will load but without their custom engines.
+- **Community SC plugins supported** — PortedPlugins, mi-UGens, f0plugins, and 7 other collections are compiled natively for Move's 64-bit ARM. Scripts like AmenBreak work with their custom engines. Set `SC_PLUGINS_BUILD_FROM_SOURCE=1` to rebuild from source if needed.
 - **1-bit display** — scripts designed around grayscale visual effects will look different. Use the dithering modes to find the best rendering for each script.
 
 ## Development
@@ -173,21 +173,25 @@ chroot /data/UserData/pw-chroot su - move -c "cd /home/we/norns && \
 
 ### Creating a Release
 
-A release consists of two artifacts:
+A release consists of three artifacts:
 
 1. **`norns-module.tar.gz`** — the Move Everything module (DSP plugin, scripts, binaries). Built on the host with `./scripts/build.sh`.
 
 2. **`norns-move-prebuilt.tar.gz`** — pre-built norns binaries (matron, crone, SC engines, Lua core, Maiden). Built on the Move so end users don't need to compile from source.
 
-To create the on-device prebuilt tarball:
+3. **`sc-plugins-arm64.tar.gz`** — pre-built 64-bit SuperCollider community plugins (PortedPlugins, mi-UGens, f0plugins, and 7 others). Built on the Move.
+
+To create the on-device artifacts:
 
 ```bash
 ssh root@move.local 'sh /data/package-norns-chroot.sh'
 # Output: /data/UserData/norns-move-prebuilt.tar.gz
+#         /data/UserData/sc-plugins-arm64.tar.gz
 scp root@move.local:/data/UserData/norns-move-prebuilt.tar.gz .
+scp root@move.local:/data/UserData/sc-plugins-arm64.tar.gz .
 ```
 
-This script resets norns source, applies patches, does a clean build, strips 32-bit plugins, and packages everything. Upload both tarballs to GitHub Releases, then update `NORNS_PREBUILT_URL` in `scripts/setup-norns.sh`.
+Upload all three tarballs to GitHub Releases, then update `PREBUILT_URL` and `SC_PLUGINS_URL` in `scripts/setup-norns.sh`.
 
 ### Other Notes
 
