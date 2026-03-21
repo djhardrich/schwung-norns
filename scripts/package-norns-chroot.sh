@@ -7,7 +7,7 @@
 #   1. Resets norns source to upstream
 #   2. Applies Move patches (FIFO screen/input/MIDI/grid, device stubs)
 #   3. Does a clean build of matron, crone, ws-wrapper, etc.
-#   4. Removes incompatible 32-bit SC plugins
+#   4. Builds/verifies 64-bit SC plugins
 #   5. Packages binaries + Lua core + SC engines + Maiden into a tarball
 #
 # Upload the tarball to GitHub Releases. End users run setup-norns.sh
@@ -89,15 +89,31 @@ if [ ! -d "$CHROOT/home/we/maiden/app/build" ]; then
 fi
 echo "  OK: maiden/app/build/"
 
-# Step 6: Remove incompatible 32-bit SC plugins
-
+# Step 6: Build or verify 64-bit SC plugins
 echo ""
-echo "--- Removing 32-bit SC plugins ---"
+echo "--- Ensuring 64-bit SC plugins ---"
+# Remove any 32-bit plugins first
 chroot "$CHROOT" sh -c '
     for f in $(find /home/we/.local/share/SuperCollider/Extensions -name "*.so" 2>/dev/null); do
-        case "$(file -b "$f")" in *32-bit*) rm -f "$f"; echo "  removed: $f" ;; esac
+        case "$(file -b "$f")" in *32-bit*) rm -f "$f"; echo "  removed 32-bit: $f" ;; esac
     done
 '
+
+# Build 64-bit plugins if not already present
+SC_PLUGIN_COUNT=$(chroot "$CHROOT" sh -c \
+    'find /home/we/.local/share/SuperCollider/Extensions -name "*.so" 2>/dev/null | wc -l')
+if [ "$SC_PLUGIN_COUNT" -lt 10 ]; then
+    echo "  Only $SC_PLUGIN_COUNT .so files found, building plugins..."
+    if [ -f "$MODULE_DIR/scripts/build-sc-plugins.sh" ]; then
+        cp "$MODULE_DIR/scripts/build-sc-plugins.sh" "$CHROOT/tmp/"
+        chrt -o 0 chroot "$CHROOT" su - move -c "sh /tmp/build-sc-plugins.sh"
+        rm -f "$CHROOT/tmp/build-sc-plugins.sh"
+    else
+        echo "WARN: build-sc-plugins.sh not found, skipping plugin build" >&2
+    fi
+else
+    echo "  $SC_PLUGIN_COUNT .so files already present, skipping build"
+fi
 
 # Step 7: Package
 echo ""
@@ -121,6 +137,7 @@ tar czf "$OUT" \
     maiden/maiden \
     maiden/maiden.yaml \
     maiden/app/ \
+    .local/share/SuperCollider/Extensions/ \
     2>/dev/null || true
 
 SIZE=$(ls -lh "$OUT" | awk '{print $5}')
@@ -129,3 +146,20 @@ echo "=== Package complete ==="
 echo "Output: $OUT ($SIZE)"
 echo ""
 echo "Upload to GitHub Releases, then update NORNS_PREBUILT_URL in setup-norns.sh"
+
+# Step 8: Create standalone SC plugins tarball
+SC_PLUGINS_OUT="/data/UserData/sc-plugins-arm64.tar.gz"
+echo ""
+echo "--- Creating SC plugins tarball ---"
+cd "$CHROOT/home/we"
+if [ -d ".local/share/SuperCollider/Extensions" ]; then
+    tar czf "$SC_PLUGINS_OUT" \
+        -C .local/share/SuperCollider Extensions/
+    SC_SIZE=$(ls -lh "$SC_PLUGINS_OUT" | awk '{print $5}')
+    echo "Output: $SC_PLUGINS_OUT ($SC_SIZE)"
+else
+    echo "WARN: No SC Extensions directory found, skipping plugins tarball"
+fi
+
+echo "Also upload: $SC_PLUGINS_OUT"
+echo "Then update SC_PLUGINS_URL in setup-norns.sh"

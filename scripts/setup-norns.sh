@@ -14,6 +14,10 @@ BUILD_FROM_SOURCE="${NORNS_BUILD_FROM_SOURCE:-0}"
 # Pre-built binary URL — update this when publishing a new release
 PREBUILT_URL="https://github.com/djhardrich/schwung-norns/releases/download/v0.2.0/norns-move-prebuilt.tar.gz"
 
+# Pre-built 64-bit SC plugins URL — update this when publishing a new release
+SC_PLUGINS_URL="https://github.com/seajaysec/sc-plugins-arm64/releases/download/v0.1.0/sc-plugins-arm64.tar.gz"
+SC_PLUGINS_BUILD="${SC_PLUGINS_BUILD_FROM_SOURCE:-0}"
+
 if [ ! -d "$CHROOT/usr" ]; then
     echo "ERROR: Chroot not found at $CHROOT" >&2
     echo "Install the PipeWire module first." >&2
@@ -209,11 +213,60 @@ s.options.sampleRate = 44100;
 SCDEOF
 chown 1000:1000 "$NORNS_HOME/norns/sc/startup.scd"
 
-echo "--- Removing incompatible 32-bit SC plugins ---"
-# norns ships PortedPlugins compiled for 32-bit ARM (Pi CM3).
-# Move is 64-bit ARM — these crash scsynth with ELFCLASS32 errors.
-rm -rf "$NORNS_HOME/.local/share/SuperCollider/Extensions/PortedPlugins" 2>/dev/null
-echo "  Cleaned incompatible plugins"
+echo "--- Installing 64-bit SC plugins ---"
+# Replace 32-bit community plugins with native aarch64 builds.
+# Default: download pre-built. Fallback: compile on-device.
+SC_EXTENSIONS="$NORNS_HOME/.local/share/SuperCollider/Extensions"
+mkdir -p "$SC_EXTENSIONS"
+
+# Remove any existing 32-bit plugins first
+chroot "$CHROOT" sh -c '
+    for f in $(find /home/we/.local/share/SuperCollider/Extensions -name "*.so" 2>/dev/null); do
+        case "$(file -b "$f")" in *32-bit*) rm -f "$f" ;; esac
+    done
+' 2>/dev/null
+
+if [ "$SC_PLUGINS_BUILD" != "1" ]; then
+    # Try downloading pre-built 64-bit plugins
+    if chrt -o 0 chroot "$CHROOT" su - move -c "
+        curl -fsSL '$SC_PLUGINS_URL' -o /tmp/sc-plugins-arm64.tar.gz
+    " 2>/dev/null; then
+        chrt -o 0 chroot "$CHROOT" su - move -c "
+            tar xzf /tmp/sc-plugins-arm64.tar.gz -C /home/we/.local/share/SuperCollider/
+            rm -f /tmp/sc-plugins-arm64.tar.gz
+        "
+        echo "  64-bit SC plugins installed from pre-built archive"
+    else
+        echo "  WARN: Pre-built download failed, falling back to on-device build"
+        SC_PLUGINS_BUILD=1
+    fi
+fi
+
+if [ "$SC_PLUGINS_BUILD" = "1" ]; then
+    echo ""
+    echo "  ============================================================"
+    echo "  Building SuperCollider plugins from source on-device."
+    echo "  This will take approximately 20-40 minutes."
+    echo "  The Move may run warm during compilation."
+    echo ""
+    echo "  To use pre-built plugins instead, ensure network is available"
+    echo "  and re-run without SC_PLUGINS_BUILD_FROM_SOURCE=1"
+    echo "  ============================================================"
+    echo ""
+
+    # Install build deps inside chroot if needed
+    chroot "$CHROOT" sh -c '
+        if ! command -v cmake >/dev/null 2>&1 || ! command -v g++ >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y --no-install-recommends gcc g++ cmake make git libsndfile1-dev
+        fi
+    '
+
+    cp "$MODULE_DIR/scripts/build-sc-plugins.sh" "$CHROOT/tmp/"
+    chrt -o 0 chroot "$CHROOT" su - move -c "sh /tmp/build-sc-plugins.sh"
+    rm -f "$CHROOT/tmp/build-sc-plugins.sh"
+    echo "  64-bit SC plugins built from source"
+fi
 
 echo "--- Ensuring /etc/hosts for localhost resolution ---"
 # sclang's OSC library needs localhost to resolve for engine registration.
