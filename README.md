@@ -4,6 +4,15 @@ Run [Monome Norns](https://monome.org/docs/norns/) — the open-source sound com
 
 Norns runs inside a Debian chroot alongside Move's native firmware. Audio, MIDI, screen, and controls are bridged between the two systems through FIFOs and PipeWire's JACK compatibility layer.
 
+## Quick Install Instructions (tested with Linux and Mac OS and Move 2.0 beta)
+
+1. Install [Move Everything](https://github.com/charlesvestal/move-everything-installer)
+2. Run the quick install script:
+
+```bash
+./quickinstall-norns.sh
+```
+
 ## Prerequisites
 
 1. **[Schwung](https://github.com/charlesvestal/schwung)** — the host runtime that loads third-party modules on Move hardware.
@@ -189,3 +198,11 @@ This script resets norns source, applies patches, does a clean build, strips 32-
 ## License
 
 GPL-3.0 — same as [Norns](https://github.com/monome/norns).
+
+
+## AI Assistance Disclaimer
+
+This module is part of Move Everything and was developed with AI assistance, including Claude and other AI assistants.
+
+All architecture, implementation, and release decisions are reviewed by human maintainers.
+AI-assisted content may still contain errors, so please validate functionality, security, and license compatibility before production use.
