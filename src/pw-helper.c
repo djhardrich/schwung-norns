@@ -1,7 +1,7 @@
 /*
  * pw-helper-norns — setuid root helper for norns chroot management
  *
- * Installed as /data/UserData/move-anything/bin/pw-helper (owned root, setuid bit set).
+ * Installed as /data/UserData/schwung/bin/pw-helper (owned root, setuid bit set).
  * Callable by the ableton user from the DSP plugin.
  *
  * Usage:
@@ -14,7 +14,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define MODULE_DIR "/data/UserData/move-anything/modules/tools/norns"
+#define MODULE_DIR "/data/UserData/schwung/modules/tools/norns"
 
 int main(int argc, char *argv[]) {
     if (setuid(0) != 0) {

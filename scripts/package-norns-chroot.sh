@@ -15,7 +15,7 @@
 set -e
 
 CHROOT="/data/UserData/pw-chroot"
-MODULE_DIR="/data/UserData/move-anything/modules/tools/norns"
+MODULE_DIR="/data/UserData/schwung/modules/tools/norns"
 OUT="/data/UserData/norns-move-prebuilt.tar.gz"
 
 echo "=== Building and packaging norns for Move ==="

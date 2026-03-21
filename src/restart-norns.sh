@@ -6,7 +6,7 @@
 #   slot defaults to 1
 #
 # Can be called via pw-helper:  pw-helper restart <slot>
-# Or directly via SSH:          sh /data/UserData/move-anything/modules/tools/norns/restart-norns.sh
+# Or directly via SSH:          sh /data/UserData/schwung/modules/tools/norns/restart-norns.sh
 
 SLOT="${1:-1}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

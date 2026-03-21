@@ -1,11 +1,11 @@
-# Norns on Move — Setup Guide
+# Norns on Move — Setup Guide (via Schwung)
 
-Complete walkthrough for deploying Monome Norns on Ableton Move via Move Everything.
+Complete walkthrough for deploying Monome Norns on Ableton Move via Schwung.
 
 ## Prerequisites
 
-- Ableton Move with [Move Everything](https://github.com/djhardrich/move-everything) installed
-- PipeWire module working (existing `move-everything-pipewire` project deployed)
+- Ableton Move with [Schwung](https://github.com/charlesvestal/schwung) installed
+- PipeWire module working (via [Schwung Installer](https://github.com/charlesvestal/schwung-installer))
 - Debian sid arm64 chroot at `/data/UserData/pw-chroot` with PipeWire + JACK
 - SSH access to Move (`ssh root@move.local`)
 - Docker installed on your build machine (for cross-compilation)
@@ -16,7 +16,7 @@ On your host machine (not the Move):
 
 ```bash
 git clone <this-repo>
-cd move-everything-norns
+cd schwung-norns
 ./scripts/build.sh
 ```
 
@@ -34,8 +34,8 @@ DEVICE_HOST=move.local ./scripts/install.sh
 ```
 
 This deploys:
-- Module files to `/data/UserData/move-anything/modules/sound_generators/norns/`
-- `pw-helper-norns` (setuid root) to `/data/UserData/move-anything/bin/`
+- Module files to `/data/UserData/schwung/modules/tools/norns/`
+- `pw-helper-norns` (setuid root) to `/data/UserData/schwung/bin/`
 - `norns-input-bridge` to chroot at `/usr/local/bin/`
 - PipeWire no-RT config (prevents SCHED_FIFO conflicts with Move's audio engine)
 
@@ -74,10 +74,10 @@ cd /home/we/norns/matron
 ./waf build
 ```
 
-## 4. Load in Move Everything
+## 4. Load in Schwung
 
-1. On the Move, navigate to Move Everything
-2. Load "Norns" as a sound generator in any shadow chain slot
+1. On the Move, navigate to Schwung
+2. Load "Norns" as a tool in any shadow chain slot
 3. The module starts PipeWire, SuperCollider, crone, matron, and Maiden automatically
 
 ## 5. Access Maiden Web IDE
@@ -132,7 +132,7 @@ git clone https://github.com/<user>/<script>.git
 - Check PipeWire is running: `chroot /data/UserData/pw-chroot pgrep pipewire`
 - Check crone is running: `chroot /data/UserData/pw-chroot pgrep crone`
 - Verify the FIFO exists: `ls -la /tmp/pw-to-move-*`
-- Check Move isn't muted (mute toggle in Move Everything can silently mute a slot)
+- Check Move isn't muted (mute toggle in Schwung can silently mute a slot)
 - Check logs: `cat /tmp/norns-dsp-debug.log`
 
 ### Screen is blank (shows "Starting...")
@@ -163,7 +163,7 @@ git clone https://github.com/<user>/<script>.git
 ## Architecture
 
 ```
-Move Everything Host                    Debian sid arm64 Chroot
+Schwung Host                            Debian sid arm64 Chroot
 ┌─────────────────────┐                ┌──────────────────────────────┐
 │ norns DSP plugin    │                │  matron (Lua VM + Cairo)     │
 │  (dsp.so)           │                │    ↕ OSC                     │

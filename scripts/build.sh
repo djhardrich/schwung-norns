@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
-IMAGE_NAME="move-anything-norns-builder"
+IMAGE_NAME="schwung-norns-builder"
 OUTPUT_BASENAME="${OUTPUT_BASENAME:-norns-module}"
 
 # ── If running outside Docker, re-exec inside container ──

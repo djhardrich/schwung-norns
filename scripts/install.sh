@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 MODULE_ID="norns"
 DEVICE_HOST="${DEVICE_HOST:-move.local}"
-REMOTE_MODULE="/data/UserData/move-anything/modules/tools/$MODULE_ID"
+REMOTE_MODULE="/data/UserData/schwung/modules/tools/$MODULE_ID"
 REMOTE_CHROOT="/data/UserData/pw-chroot"
 DIST_DIR="$REPO_ROOT/dist/$MODULE_ID"
 
@@ -42,9 +42,9 @@ PW_HELPER="$REPO_ROOT/build/pw-helper"
 if [ -f "$PW_HELPER" ]; then
     echo ""
     echo "--- Installing pw-helper (setuid root) ---"
-    ssh "root@$DEVICE_HOST" "mkdir -p /data/UserData/move-anything/bin"
-    scp "$PW_HELPER" "root@$DEVICE_HOST:/data/UserData/move-anything/bin/pw-helper-norns"
-    ssh "root@$DEVICE_HOST" "chown root:root /data/UserData/move-anything/bin/pw-helper-norns && chmod 4755 /data/UserData/move-anything/bin/pw-helper-norns"
+    ssh "root@$DEVICE_HOST" "mkdir -p /data/UserData/schwung/bin"
+    scp "$PW_HELPER" "root@$DEVICE_HOST:/data/UserData/schwung/bin/pw-helper-norns"
+    ssh "root@$DEVICE_HOST" "chown root:root /data/UserData/schwung/bin/pw-helper-norns && chmod 4755 /data/UserData/schwung/bin/pw-helper-norns"
     echo "pw-helper-norns installed"
 fi
 

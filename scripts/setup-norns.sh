@@ -8,11 +8,11 @@ set -e
 
 CHROOT="/data/UserData/pw-chroot"
 NORNS_HOME="$CHROOT/home/we"
-MODULE_DIR="/data/UserData/move-anything/modules/tools/norns"
+MODULE_DIR="/data/UserData/schwung/modules/tools/norns"
 BUILD_FROM_SOURCE="${NORNS_BUILD_FROM_SOURCE:-0}"
 
 # Pre-built binary URL — update this when publishing a new release
-PREBUILT_URL="https://github.com/djhardrich/move-everything-norns/releases/download/v0.2.0/norns-move-prebuilt.tar.gz"
+PREBUILT_URL="https://github.com/djhardrich/schwung-norns/releases/download/v0.2.0/norns-move-prebuilt.tar.gz"
 
 if [ ! -d "$CHROOT/usr" ]; then
     echo "ERROR: Chroot not found at $CHROOT" >&2
@@ -270,5 +270,5 @@ DUMMYEOF
 
 echo ""
 echo "=== Norns Setup Complete ==="
-echo "Load 'Norns' as a sound generator in Move Everything."
+echo "Load 'Norns' as a tool in Schwung."
 echo "Maiden: http://move.local:5000"

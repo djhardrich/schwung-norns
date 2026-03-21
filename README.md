@@ -1,14 +1,14 @@
 # Norns on Ableton Move
 
-Run [Monome Norns](https://monome.org/docs/norns/) — the open-source sound computer — as a module on Ableton Move hardware via [Move Everything](https://github.com/charlesvestal/move-everything).
+Run [Monome Norns](https://monome.org/docs/norns/) — the open-source sound computer — as a module on Ableton Move hardware via [Schwung](https://github.com/charlesvestal/schwung).
 
 Norns runs inside a Debian chroot alongside Move's native firmware. Audio, MIDI, screen, and controls are bridged between the two systems through FIFOs and PipeWire's JACK compatibility layer.
 
 ## Prerequisites
 
-1. **[Move Everything](https://github.com/charlesvestal/move-everything)** — the host runtime that loads third-party modules on Move hardware.
+1. **[Schwung](https://github.com/charlesvestal/schwung)** — the host runtime that loads third-party modules on Move hardware.
 
-2. **[Move Everything PipeWire](https://github.com/djhardrich/move-everything-pipewire)** — provides the Debian chroot (either command-line or desktop variant) and PipeWire audio infrastructure. Install using the install script from that repo before proceeding.
+2. **[Schwung Installer](https://github.com/charlesvestal/schwung-installer)** — provides the Debian chroot (either command-line or desktop variant) and PipeWire audio infrastructure. Install using the install script from that repo before proceeding.
 
 ## Install
 
@@ -23,7 +23,7 @@ DEVICE_HOST=move.local ./scripts/install.sh
 ssh root@move.local 'NORNS_BUILD_FROM_SOURCE=1 sh /data/setup-norns.sh'
 ```
 
-Load **Norns** from the Tools menu in Move Everything.
+Load **Norns** from the Tools menu in Schwung.
 
 ## Controls
 
@@ -34,7 +34,7 @@ Load **Norns** from the Tools menu in Move Everything.
 | Knobs 1-3 | Norns encoders E1/E2/E3 |
 | Track Mutes | Norns keys K1/K2/K3 |
 | Knob 8 double-tap | Restart Norns |
-| Back double-press | Exit to Move Everything |
+| Back double-press | Exit to Schwung |
 
 ### Pad Modes
 
@@ -154,7 +154,7 @@ Norns itself (matron, crone, SuperCollider integration) is built inside the chro
 ssh root@move.local
 
 # Apply patches and rebuild (takes ~90 seconds)
-cp /data/UserData/move-anything/modules/tools/norns/patches/apply-move-patches.sh /tmp/
+cp /data/UserData/schwung/modules/tools/norns/patches/apply-move-patches.sh /tmp/
 chroot /data/UserData/pw-chroot sh -c "cd /home/we/norns && \
     git checkout -- matron/src/ crone/src/ wscript matron/wscript && \
     sh /tmp/apply-move-patches.sh"
@@ -166,7 +166,7 @@ chroot /data/UserData/pw-chroot su - move -c "cd /home/we/norns && \
 
 A release consists of two artifacts:
 
-1. **`norns-module.tar.gz`** — the Move Everything module (DSP plugin, scripts, binaries). Built on the host with `./scripts/build.sh`.
+1. **`norns-module.tar.gz`** — the Schwung module (DSP plugin, scripts, binaries). Built on the host with `./scripts/build.sh`.
 
 2. **`norns-move-prebuilt.tar.gz`** — pre-built norns binaries (matron, crone, SC engines, Lua core, Maiden). Built on the Move so end users don't need to compile from source.
 

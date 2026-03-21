@@ -1,5 +1,5 @@
 /*
- * norns_plugin.c — Move Everything DSP plugin for Norns FIFO bridge
+ * norns_plugin.c — Schwung DSP plugin for Norns FIFO bridge
  *                  with bidirectional MIDI FIFO bridge and screen FIFO
  *
  * Audio path:
@@ -228,7 +228,7 @@ static void ensure_chroot_tmp_bind(void) {
     pid_t pid = fork();
     if (pid == 0) {
         /* Child: mount --bind /tmp $CHROOT/tmp via pw-helper or directly */
-        execl("/data/UserData/move-anything/bin/pw-helper-norns",
+        execl("/data/UserData/schwung/bin/pw-helper-norns",
               "pw-helper-norns", "mount", (char *)NULL);
         /* Fallback: try mount directly (will fail unless we're root) */
         execl("/bin/mount", "mount", "--bind", "/tmp",
@@ -899,7 +899,7 @@ static void start_pw_chroot(norns_instance_t *inst) {
             close(g_log_fd);
         int fd = open("/tmp/pw-start.log", O_WRONLY | O_CREAT | O_TRUNC, 0666);
         if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); close(fd); }
-        execl("/data/UserData/move-anything/bin/pw-helper-norns", "pw-helper-norns", "start",
+        execl("/data/UserData/schwung/bin/pw-helper-norns", "pw-helper-norns", "start",
               inst->fifo_playback_path, slot_str, (char *)NULL);
         _exit(127);
     }
@@ -926,7 +926,7 @@ static void stop_pw_chroot(norns_instance_t *inst) {
         if (g_log_fd >= 0) close(g_log_fd);
         int fd = open("/dev/null", O_WRONLY);
         if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); close(fd); }
-        execl("/data/UserData/move-anything/bin/pw-helper-norns", "pw-helper-norns", "stop",
+        execl("/data/UserData/schwung/bin/pw-helper-norns", "pw-helper-norns", "stop",
               slot_str, (char *)NULL);
         _exit(127);
     }
