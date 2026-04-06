@@ -56,6 +56,20 @@ else
     '
 fi
 
+# Step 1b: Ensure build dependencies are installed
+echo ""
+echo "--- Ensuring build dependencies ---"
+chroot "$CHROOT" apt-get update
+chroot "$CHROOT" apt-get install -y --no-install-recommends \
+    liblua5.3-dev libcairo2-dev liblo-dev libevdev-dev \
+    libasound2-dev libsndfile1-dev libjack-jackd2-dev \
+    libnanomsg-dev libavahi-compat-libdnssd-dev libudev-dev \
+    libglib2.0-dev \
+    libncurses-dev libncursesw5-dev \
+    gcc g++ git cmake python3 python3-zombie-imp curl \
+    golang \
+    nodejs npm
+
 # Step 2: Apply Move patches
 echo ""
 echo "--- Applying Move patches ---"
