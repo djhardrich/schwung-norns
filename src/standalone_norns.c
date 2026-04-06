@@ -375,8 +375,9 @@ static void start_chroot(void) {
         setsid();
         int fd = open("/tmp/pw-start.log", O_WRONLY | O_CREAT | O_TRUNC, 0666);
         if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); close(fd); }
-        execl("/bin/sh", "sh", MODULE_DIR "/start-norns.sh",
-              "/tmp/pw-to-move-1", "1", (char *)NULL);
+        execl("/data/UserData/schwung/bin/pw-helper-norns",
+              "pw-helper-norns", "start", "/tmp/pw-to-move-1", "1",
+              (char *)NULL);
         _exit(127);
     }
     log_msg("norns chroot launch requested");
@@ -387,7 +388,8 @@ static void stop_chroot(void) {
     if (pid == 0) {
         int fd = open("/dev/null", O_WRONLY);
         if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); close(fd); }
-        execl("/bin/sh", "sh", MODULE_DIR "/stop-norns.sh", "1", (char *)NULL);
+        execl("/data/UserData/schwung/bin/pw-helper-norns",
+              "pw-helper-norns", "stop", "1", (char *)NULL);
         _exit(127);
     }
     int status;
