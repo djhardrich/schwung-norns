@@ -1,23 +1,5 @@
 #!/bin/sh
-# Norns standalone launcher — kills Move stragglers, starts norns binary.
-# Called by Schwung's launch-standalone.sh which already killed Move,
-# but stragglers (MoveWebServiceOriginal, link-subscriber, etc.) may linger.
-
-DIR="$(dirname "$0")"
 LOG=/tmp/norns-standalone.log
-
-# Kill any Move stragglers that launch-standalone.sh missed
-for name in MoveOriginal Move MoveLauncher MoveMessageDisplay MoveWebServiceOriginal \
-            shadow_ui link-subscriber display-server \
-            rnbomovecontrol rnbooscquery; do
-    pids=$(pidof "$name" 2>/dev/null) && kill -9 $pids 2>/dev/null
-done
-
-# Free SPI device if still held
-pids=$(fuser /dev/ablspi0.0 2>/dev/null) && kill -9 $pids 2>/dev/null
+kill -9 $(pidof MoveOriginal Move MoveLauncher MoveMessageDisplay) 2>/dev/null
 sleep 1
-
-# Clean up Schwung SHM
-rm -f /dev/shm/schwung-* 2>/dev/null || true
-
-exec "$DIR/norns_bin" "$@" >> "$LOG" 2>&1
+exec "$(dirname "$0")/norns_bin" "$@" >> "$LOG" 2>&1

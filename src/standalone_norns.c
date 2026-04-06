@@ -324,9 +324,19 @@ static int jack_client_setup(void) {
 /* ── SPI Setup ── */
 
 static int spi_open(void) {
-    g_spi_fd = open(SCHWUNG_SPI_DEVICE, O_RDWR);
+    /* SPI device may still be held briefly after launch-standalone.sh kills Move.
+     * Retry for up to 5 seconds. */
+    for (int attempt = 0; attempt < 50; attempt++) {
+        g_spi_fd = open(SCHWUNG_SPI_DEVICE, O_RDWR);
+        if (g_spi_fd >= 0) break;
+        if (errno != EBUSY) {
+            perror("open SPI device");
+            return -1;
+        }
+        usleep(100000); /* 100ms */
+    }
     if (g_spi_fd < 0) {
-        perror("open SPI device");
+        log_msg("FATAL: SPI device still busy after 5s");
         return -1;
     }
     g_spi_buf = mmap(NULL, SCHWUNG_PAGE_SIZE, PROT_READ | PROT_WRITE,
