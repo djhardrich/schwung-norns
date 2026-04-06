@@ -60,17 +60,6 @@ if [ -f "$INPUT_BRIDGE" ]; then
     echo "norns-input-bridge installed"
 fi
 
-# ── Install jack-fifo-bridge to chroot ──
-JACK_BRIDGE="$REPO_ROOT/build/jack-fifo-bridge"
-[ ! -f "$JACK_BRIDGE" ] && JACK_BRIDGE="$DIST_DIR/bin/jack-fifo-bridge"
-if [ -f "$JACK_BRIDGE" ]; then
-    echo ""
-    echo "--- Installing jack-fifo-bridge to chroot ---"
-    ssh "root@$DEVICE_HOST" "mkdir -p $REMOTE_CHROOT/usr/local/bin"
-    scp "$JACK_BRIDGE" "root@$DEVICE_HOST:$REMOTE_CHROOT/usr/local/bin/jack-fifo-bridge"
-    ssh "root@$DEVICE_HOST" "chmod +x $REMOTE_CHROOT/usr/local/bin/jack-fifo-bridge"
-    echo "jack-fifo-bridge installed"
-fi
 
 if [ ! -f "$PW_HELPER" ]; then
     echo ""
@@ -80,33 +69,13 @@ fi
 # ── Install chroot profile ──
 echo ""
 echo "--- Installing chroot profile ---"
-ssh "root@$DEVICE_HOST" "mkdir -p $REMOTE_CHROOT/etc/profile.d && cat > $REMOTE_CHROOT/etc/profile.d/pipewire.sh << 'PROFEOF'
-# Auto-set PipeWire environment for Move bridge
+ssh "root@$DEVICE_HOST" "mkdir -p $REMOTE_CHROOT/etc/profile.d && cat > $REMOTE_CHROOT/etc/profile.d/jack.sh << 'PROFEOF'
+# Auto-set JACK environment for Move
 export XDG_RUNTIME_DIR=/tmp/pw-runtime-1
-export DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/pw-runtime-1/dbus-pw
 PROFEOF
-chmod 644 $REMOTE_CHROOT/etc/profile.d/pipewire.sh"
-
-# ── Install PipeWire audio config (rate, quantum, no-RT) ──
-echo ""
-echo "--- Installing PipeWire config ---"
-ssh "root@$DEVICE_HOST" "mkdir -p $REMOTE_CHROOT/etc/pipewire/pipewire.conf.d
-rm -f $REMOTE_CHROOT/etc/pipewire/pipewire.conf.d/no-rt.conf
-cat > $REMOTE_CHROOT/etc/pipewire/pipewire.conf.d/move-audio.conf << 'PWEOF'
-context.properties = {
-    module.rt                   = false
-    default.clock.rate          = 44100
-    default.clock.allowed-rates = [ 44100 ]
-    default.clock.quantum       = 1024
-    default.clock.min-quantum   = 1024
-    default.clock.max-quantum   = 1024
-}
-PWEOF
-chmod 644 $REMOTE_CHROOT/etc/pipewire/pipewire.conf.d/move-audio.conf
-mkdir -p $REMOTE_CHROOT/etc/wireplumber/wireplumber.conf.d
-cp $REMOTE_CHROOT/etc/pipewire/pipewire.conf.d/move-audio.conf $REMOTE_CHROOT/etc/wireplumber/wireplumber.conf.d/move-audio.conf
-mkdir -p $REMOTE_CHROOT/etc/security/limits.d
-echo '# Disabled - RT scheduling conflicts with Move audio engine' > $REMOTE_CHROOT/etc/security/limits.d/25-pw-rlimits.conf"
+chmod 644 $REMOTE_CHROOT/etc/profile.d/jack.sh
+# Clean up old PipeWire profile if present
+rm -f $REMOTE_CHROOT/etc/profile.d/pipewire.sh"
 
 # ── Deploy patches and setup scripts ──
 echo ""
