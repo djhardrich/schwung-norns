@@ -66,7 +66,7 @@ chroot "$CHROOT" apt-get install -y --no-install-recommends \
     libnanomsg-dev libavahi-compat-libdnssd-dev libudev-dev \
     libglib2.0-dev \
     libncurses-dev libncursesw5-dev \
-    gcc g++ git cmake python3 python3-zombie-imp curl \
+    build-essential gcc g++ git cmake python3 python3-zombie-imp curl \
     golang \
     nodejs npm
 
