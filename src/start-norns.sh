@@ -65,22 +65,32 @@ wait_for() {
         fi
     "
 
-    # Start jackd (from RNBO Takeover)
-    JACKD="/data/UserData/rnbo/bin/jackd"
-    if [ -x "$JACKD" ] && ! pgrep -x jackd >/dev/null 2>&1; then
-        chrt -o 0 "$JACKD" -d move -r 44100 -p 128 &
-        echo $! > "$PID_DIR/jackd.pid"
-        sleep 2  # wait for JACK server to initialize
-        echo "jackd started"
-    elif pgrep -x jackd >/dev/null 2>&1; then
-        echo "jackd already running"
-    else
-        echo "ERROR: jackd not found at $JACKD — install RNBO Takeover for Move" >&2
-    fi
-
     # Ensure /dev/shm is accessible from chroot for JACK SHM transport
     if ! mountpoint -q "$CHROOT/dev/shm" 2>/dev/null; then
         mount --bind /dev/shm "$CHROOT/dev/shm" || true
+    fi
+
+    # Start RNBO jackd inside the chroot as the 'move' user.
+    # Must run in-chroot so JACK clients (crone, scsynth) share the same
+    # libjack/BDB version and can reach the server's Unix socket.
+    # Uses dummy driver — actual audio I/O is via SHM rings between the
+    # DSP plugin (host) and crone (chroot).  JACK only provides inter-process
+    # routing for crone ↔ scsynth.
+    RNBO_JACK="/opt/rnbo-jack"
+    JACKD_CHROOT="$RNBO_JACK/jackd"
+    if [ -x "$CHROOT/$JACKD_CHROOT" ] && ! chroot "$CHROOT" pgrep -x jackd >/dev/null 2>&1; then
+        chrt -o 0 chroot "$CHROOT" su - move -c "
+            export LD_LIBRARY_PATH=$RNBO_JACK
+            export JACK_DRIVER_DIR=$RNBO_JACK/jack
+            nohup $JACKD_CHROOT -d dummy -r 44100 -p 128 >/dev/null 2>&1 &
+            echo \$! > /tmp/norns-pids-${SLOT}/jackd.pid
+        "
+        sleep 2  # wait for JACK server to initialize
+        echo "jackd started (in-chroot, dummy driver)"
+    elif chroot "$CHROOT" pgrep -x jackd >/dev/null 2>&1; then
+        echo "jackd already running"
+    else
+        echo "ERROR: jackd not found at $CHROOT/$JACKD_CHROOT — run setup script" >&2
     fi
 
     # Remove 32-bit SC plugins that crash scsynth on 64-bit Move.
@@ -91,10 +101,14 @@ wait_for() {
         done
     ' 2>/dev/null
 
+    # All chroot JACK clients must use the RNBO libjack to match the server's
+    # BDB version.  Set LD_LIBRARY_PATH for every su - move invocation.
+    JACK_ENV="export LD_LIBRARY_PATH=$RNBO_JACK; export XDG_RUNTIME_DIR=$RUNTIME_DIR"
+
     # Start crone (JACK audio routing — must start before sclang)
     if [ -x "$CHROOT/home/we/norns/build/crone/crone" ]; then
         chrt -o 0 chroot "$CHROOT" su - move -c "
-            export XDG_RUNTIME_DIR=$RUNTIME_DIR
+            $JACK_ENV
             cd /home/we/norns
             nohup ./build/crone/crone >/dev/null 2>&1 &
             echo \$! > /tmp/norns-pids-${SLOT}/crone.pid
@@ -109,7 +123,7 @@ wait_for() {
     # an empty engine list → "error: missing ENGINE_NAME" on every script.
     if [ -x "$CHROOT/home/we/norns/build/matron/matron" ]; then
         chrt -o 0 chroot "$CHROOT" su - move -c "
-            export XDG_RUNTIME_DIR=$RUNTIME_DIR
+            $JACK_ENV
             export NORNS_SCREEN_FIFO=/tmp/norns-screen-${SLOT}
             export NORNS_INPUT_FIFO=/tmp/norns-input-${SLOT}
             cd /home/we/norns
@@ -123,7 +137,7 @@ wait_for() {
     # sclang manages scsynth's lifecycle and the norns engine system
     if chroot "$CHROOT" which sclang >/dev/null 2>&1; then
         chrt -o 0 chroot "$CHROOT" su - move -c "
-            export XDG_RUNTIME_DIR=$RUNTIME_DIR
+            $JACK_ENV
             export QT_QPA_PLATFORM=offscreen
             cd /home/we/norns
             nohup ./build/ws-wrapper/ws-wrapper ws://*:5556 sclang -l /home/we/norns/sclang_conf.yaml >/dev/null 2>&1 &
@@ -134,7 +148,7 @@ wait_for() {
         _sc_wait=0
         while [ $_sc_wait -lt 45 ]; do
             if chroot "$CHROOT" su - move -c "
-                export XDG_RUNTIME_DIR=$RUNTIME_DIR
+                $JACK_ENV
                 jack_lsp 2>/dev/null | grep -q SuperCollider" 2>/dev/null; then
                 echo "SuperCollider JACK ports found (waited ${_sc_wait}s)"
                 break
@@ -147,7 +161,7 @@ wait_for() {
     elif chroot "$CHROOT" which scsynth >/dev/null 2>&1; then
         echo "WARN: sclang not found, starting scsynth directly (no engines)"
         chrt -o 0 chroot "$CHROOT" su - move -c "
-            export XDG_RUNTIME_DIR=$RUNTIME_DIR
+            $JACK_ENV
             nohup scsynth -u 57110 -a 128 -i 2 -o 2 -r 44100 -z 128 -Z 128 >/dev/null 2>&1 &
             echo \$! > /tmp/norns-pids-${SLOT}/scsynth.pid
         "
@@ -163,7 +177,7 @@ wait_for() {
         _cr_wait=0
         while [ $_cr_wait -lt 60 ]; do
             if chroot "$CHROOT" su - move -c "
-                export XDG_RUNTIME_DIR=$RUNTIME_DIR
+                $JACK_ENV
                 jack_lsp 2>/dev/null | grep -q SuperCollider" 2>/dev/null; then
                 sleep 8  # Let CroneDefs + AudioContext finish
                 # Send /crone/ready OSC message to matron (port 8888)
@@ -189,6 +203,7 @@ s.close()
     MIDI_IN_FIFO="/tmp/midi-to-chroot-${SLOT}"
     if [ -e "$INPUT_FIFO" ]; then
         chrt -o 0 chroot "$CHROOT" su - move -c "
+            $JACK_ENV
             nohup /usr/local/bin/norns-input-bridge $INPUT_FIFO $MIDI_IN_FIFO >/dev/null 2>&1 &
             echo \$! > /tmp/norns-pids-${SLOT}/norns-input-bridge.pid
         "
@@ -198,7 +213,7 @@ s.close()
     MIDI_OUT_FIFO="/tmp/midi-from-chroot-${SLOT}"
     if [ -e "$MIDI_IN_FIFO" ] && [ -e "$MIDI_OUT_FIFO" ] && [ -x "$CHROOT/usr/local/bin/midi-bridge" ]; then
         chrt -o 0 chroot "$CHROOT" su - move -c "
-            export XDG_RUNTIME_DIR=$RUNTIME_DIR
+            $JACK_ENV
             nohup /usr/local/bin/midi-bridge $MIDI_IN_FIFO $MIDI_OUT_FIFO >/dev/null 2>&1 &
             echo \$! > /tmp/norns-pids-${SLOT}/midi-bridge.pid
         "
