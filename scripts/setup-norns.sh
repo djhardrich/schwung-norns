@@ -172,8 +172,42 @@ fi
 
 echo "--- Setting up dust directory ---"
 chrt -o 0 chroot "$CHROOT" su - move -c '
-    mkdir -p /home/we/dust/code /home/we/dust/audio /home/we/dust/data
+    mkdir -p /home/we/dust/code /home/we/dust/audio /home/we/dust/data /home/we/dust/data/sources
 '
+
+# Install maiden catalog sources (enables community script browser)
+cat > "$CHROOT/home/we/dust/data/sources/community.json" << 'SRCEOF'
+{
+  "file_info": {
+    "version": 1,
+    "kind": "catalog_source"
+  },
+  "source": {
+      "name": "community",
+      "method": "download",
+      "parameters": {
+          "url": "https://raw.githubusercontent.com/monome/norns-community/main/community.json"
+      }
+  }
+}
+SRCEOF
+cat > "$CHROOT/home/we/dust/data/sources/base.json" << 'SRCEOF'
+{
+  "file_info": {
+    "version": 1,
+    "kind": "catalog_source"
+  },
+  "source": {
+      "name": "base",
+      "method": "download",
+      "parameters": {
+          "url": "https://raw.githubusercontent.com/monome/norns-community/main/base.json"
+      }
+  }
+}
+SRCEOF
+chown -R 1000:1000 "$CHROOT/home/we/dust/data/sources"
+echo "  Installed maiden catalog sources"
 
 echo "--- Installing starter scripts ---"
 chrt -o 0 chroot "$CHROOT" su - move -c '
