@@ -35,16 +35,6 @@ mkdir -p build/module
     -Wl,-rpath,/data/UserData/rnbo/lib \
     $JACK_FLAGS
 
-echo "=== Cross-compiling dsp.so ==="
-
-"${CROSS_PREFIX}gcc" -O3 -g -shared -fPIC \
-    src/dsp/norns_plugin.c \
-    -o build/module/dsp.so \
-    -Isrc/dsp \
-    -lpthread -lm \
-    -Wl,-rpath,/data/UserData/rnbo/lib \
-    $JACK_FLAGS
-
 echo "=== Cross-compiling pw-helper ==="
 "${CROSS_PREFIX}gcc" -O2 -static \
     src/pw-helper.c \
@@ -59,7 +49,6 @@ echo "=== Cross-compiling norns-input-bridge ==="
 echo "=== Assembling module package ==="
 cp src/module.json       build/module/
 cp src/standalone        build/module/
-cp src/ui.js             build/module/
 cp src/start-norns.sh    build/module/
 cp src/stop-norns.sh     build/module/
 cp src/restart-norns.sh  build/module/
