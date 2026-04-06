@@ -141,6 +141,10 @@ static int g_disp_phase = 0;               /* 0-6 for 7-phase push */
 static int g_display_shm_fd = -1;
 static norns_display_shm_t *g_display_shm = NULL;
 
+/* Back button double-click */
+static uint64_t g_back_press_time = 0;
+#define BACK_DOUBLE_CLICK_MS 250
+
 /* JACK connection state */
 static bool g_jack_ports_connected = false;
 static uint64_t g_jack_retry_ms = 0;
@@ -570,10 +574,16 @@ static void process_spi_midi_in(void) {
         uint8_t status_byte = (msg.type << 4) | msg.channel;
         uint8_t type_nibble = status_byte & 0xF0;
 
-        /* Back button (CC 51 value 127) -> exit */
+        /* Back button (CC 51 value 127) -> double-click to exit */
         if (type_nibble == MIDI_CC && msg.data1 == CC_BACK && msg.data2 == 127) {
-            g_running = 0;
-            return;
+            uint64_t now = now_ms();
+            if (g_back_press_time > 0 &&
+                (now - g_back_press_time) < BACK_DOUBLE_CLICK_MS) {
+                g_running = 0;
+                return;
+            }
+            g_back_press_time = now;
+            continue;
         }
 
         /* Mute button (CC 88) -> toggle grid mode */
