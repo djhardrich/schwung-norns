@@ -8,7 +8,7 @@
 set -e
 
 EXTENSIONS="$HOME/.local/share/SuperCollider/Extensions"
-BUILD_ROOT="/tmp/sc-plugin-build"
+BUILD_ROOT="${SC_BUILD_ROOT:-/data/tmp/sc-plugin-build}"
 JOBS="${SC_PLUGINS_JOBS:-3}"
 
 mkdir -p "$EXTENSIONS" "$BUILD_ROOT"
