@@ -22,8 +22,20 @@ if [ ! -f /.dockerenv ]; then
 fi
 
 # ── Inside Docker: cross-compile ──
-echo "=== Cross-compiling dsp.so ==="
+JACK_FLAGS=$(PKG_CONFIG_PATH=${PKG_CONFIG_PATH} pkg-config --cflags --libs jack 2>/dev/null || echo "-ljack")
+
+echo "=== Cross-compiling standalone binary ==="
 mkdir -p build/module
+
+"${CROSS_PREFIX}gcc" -O3 -g \
+    src/standalone_norns.c \
+    -o build/module/norns \
+    -Isrc -Isrc/lib \
+    -lpthread -lm -lrt \
+    -Wl,-rpath,/data/UserData/rnbo/lib \
+    $JACK_FLAGS
+
+echo "=== Cross-compiling dsp.so (legacy non-standalone mode) ==="
 
 "${CROSS_PREFIX}gcc" -O3 -g -shared -fPIC \
     src/dsp/norns_plugin.c \
@@ -31,7 +43,7 @@ mkdir -p build/module
     -Isrc/dsp \
     -lpthread -lm \
     -Wl,-rpath,/data/UserData/rnbo/lib \
-    $(PKG_CONFIG_PATH=${PKG_CONFIG_PATH} pkg-config --cflags --libs jack 2>/dev/null || echo "-ljack")
+    $JACK_FLAGS
 
 echo "=== Cross-compiling pw-helper ==="
 "${CROSS_PREFIX}gcc" -O2 -static \
@@ -42,19 +54,25 @@ echo "=== Cross-compiling norns-input-bridge ==="
 "${CROSS_PREFIX}gcc" -O2 -Wall \
     src/norns-input-bridge.c \
     -o build/norns-input-bridge \
-    $(PKG_CONFIG_PATH=${PKG_CONFIG_PATH} pkg-config --cflags --libs jack 2>/dev/null || echo "-ljack")
+    $JACK_FLAGS
 
 echo "=== Assembling module package ==="
 cp src/module.json  build/module/
-cp src/ui.js        build/module/
 cp src/start-norns.sh    build/module/
 cp src/stop-norns.sh     build/module/
 cp src/restart-norns.sh  build/module/
-chmod +x build/module/start-norns.sh build/module/stop-norns.sh build/module/restart-norns.sh
+chmod +x build/module/norns build/module/start-norns.sh build/module/stop-norns.sh build/module/restart-norns.sh
 
 mkdir -p build/module/bin
 cp build/pw-helper           build/module/bin/
 cp build/norns-input-bridge  build/module/bin/
+
+# Also include ui.js and dsp.so for potential non-standalone fallback
+cp src/ui.js        build/module/
+
+mkdir -p build/module/patches build/module/scripts
+cp patches/apply-move-patches.sh build/module/patches/ 2>/dev/null || true
+cp scripts/build-sc-plugins.sh   build/module/scripts/ 2>/dev/null || true
 
 # ── Package ──
 mkdir -p dist
@@ -66,4 +84,5 @@ cp -r build/module dist/norns
 echo ""
 echo "=== Build complete ==="
 echo "Module: dist/${OUTPUT_BASENAME}.tar.gz"
+echo "Standalone binary: dist/norns/norns"
 echo "Files:  dist/norns/"
