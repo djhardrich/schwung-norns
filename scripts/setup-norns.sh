@@ -172,11 +172,13 @@ fi
 
 echo "--- Setting up dust directory ---"
 chrt -o 0 chroot "$CHROOT" su - move -c '
-    mkdir -p /home/we/dust/code /home/we/dust/audio /home/we/dust/data
+    mkdir -p /home/we/dust/code /home/we/dust/audio /home/we/dust/data/sources /home/we/dust/data/catalogs
 '
 
-# Install maiden catalog sources (enables community script browser)
-cat > "$CHROOT/home/we/dust/data/community.json" << 'SRCEOF'
+# Install maiden catalog sources (enables community script browser).
+# maiden.yaml expects sources at $HOME/dust/data/sources/*.json
+# and writes downloaded catalogs to $HOME/dust/data/catalogs/.
+cat > "$CHROOT/home/we/dust/data/sources/community.json" << 'SRCEOF'
 {
   "file_info": {
     "version": 1,
@@ -191,7 +193,7 @@ cat > "$CHROOT/home/we/dust/data/community.json" << 'SRCEOF'
   }
 }
 SRCEOF
-cat > "$CHROOT/home/we/dust/data/base.json" << 'SRCEOF'
+cat > "$CHROOT/home/we/dust/data/sources/base.json" << 'SRCEOF'
 {
   "file_info": {
     "version": 1,
@@ -206,7 +208,7 @@ cat > "$CHROOT/home/we/dust/data/base.json" << 'SRCEOF'
   }
 }
 SRCEOF
-chown 1000:1000 "$CHROOT/home/we/dust/data/community.json" "$CHROOT/home/we/dust/data/base.json"
+chown 1000:1000 "$CHROOT/home/we/dust/data/sources/community.json" "$CHROOT/home/we/dust/data/sources/base.json"
 echo "  Installed maiden catalog sources"
 
 echo "--- Installing starter scripts ---"
