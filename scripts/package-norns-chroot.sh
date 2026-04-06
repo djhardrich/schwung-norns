@@ -105,7 +105,20 @@ done
 # Step 5: Build Maiden web UI
 echo ""
 echo "--- Building Maiden web UI ---"
-chroot "$CHROOT" npm install -g yarn
+# Clone maiden if not present (prebuilt installs don't include source)
+if [ ! -d "$CHROOT/home/we/maiden/.git" ]; then
+    echo "  Cloning maiden..."
+    chrt -o 0 chroot "$CHROOT" su - move -c '
+        cd /home/we
+        if [ ! -d maiden ]; then
+            git clone https://github.com/monome/maiden.git
+        fi
+        cd maiden
+        mkdir -p /home/we/go-cache
+        GOCACHE=/home/we/go-cache GOTMPDIR=/home/we/go-cache go build -o maiden .
+    '
+fi
+chroot "$CHROOT" sh -c 'cd /tmp && npm install -g yarn'
 chrt -o 0 chroot "$CHROOT" su - move -c '
     cd /home/we/maiden/web
     yarn install
