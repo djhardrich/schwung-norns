@@ -1302,6 +1302,14 @@ static void *v2_create_instance(const char *module_dir, const char *json_default
     inst->shm_audio = NULL;
     inst->shm_audio_in = NULL;
     inst->audio_in_enabled = false;
+    inst->jack_client = NULL;
+    inst->jack_audio_in_L = NULL;
+    inst->jack_audio_in_R = NULL;
+    inst->jack_audio_out_L = NULL;
+    inst->jack_audio_out_R = NULL;
+    inst->jack_midi_in = NULL;
+    inst->jack_midi_out = NULL;
+    inst->jack_retry_ms = 0;
     inst->fifo_midi_in_fd = -1;
     inst->fifo_midi_out_fd = -1;
     inst->midi_out_buf_len = 0;
@@ -1378,6 +1386,7 @@ static void v2_destroy_instance(void *instance) {
     if (!inst) return;
     pw_log("destroy_instance");
 
+    jack_client_shutdown(inst);
     stop_pw_chroot(inst);
     close_midi_fifos(inst);
     close_fifo(inst);
@@ -1560,31 +1569,14 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
 
     needed = (size_t)frames * 2;
 
-    /* Log render_block rate and pump_pipe diagnostics periodically */
+    /* Periodic JACK status log */
     if (inst && (++g_render_count % 44100) == 0) {
-        /* Try a diagnostic read from the FIFO */
-        uint8_t test_buf[16];
-        ssize_t test_n = -99;
-        int test_errno = 0;
-        if (inst->fifo_playback_fd >= 0) {
-            test_n = read(inst->fifo_playback_fd, test_buf, sizeof(test_buf));
-            if (test_n < 0) test_errno = errno;
-            if (test_n > 0) {
-                /* Push back what we read so it's not lost */
-                size_t aligned = (size_t)test_n & ~3U;
-                if (aligned > 0) {
-                    int16_t samp[8];
-                    memcpy(samp, test_buf, aligned);
-                    ring_push(inst, samp, aligned / 2);
-                }
-            }
-        }
         char dbg[192];
         snprintf(dbg, sizeof(dbg),
-                 "render_block: count=%llu ring=%zu fd=%d read=%zd errno=%d path=%s",
-                 (unsigned long long)g_render_count, ring_available(inst),
-                 inst->fifo_playback_fd, test_n, test_errno,
-                 inst->fifo_playback_path);
+                 "render_block: count=%llu jack=%s shm=%s",
+                 (unsigned long long)g_render_count,
+                 inst->jack_client ? "connected" : "disconnected",
+                 inst->shm_audio ? "ok" : "none");
         pw_log(dbg);
     }
     memset(out_interleaved_lr, 0, needed * sizeof(int16_t));
@@ -1592,16 +1584,18 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
     if (!inst) return;
 
     check_pw_alive(inst);
-    pump_midi_out(inst);
 
-    /* Audio input: copy Move's input to SHM for the bridge to pick up.
-     * Only when enabled — avoids feedback and saves CPU for scripts
-     * that don't use audio input. */
-    if (inst->audio_in_enabled && inst->shm_audio_in && g_host && g_host->audio_in) {
-        shm_write(inst->shm_audio_in, g_host->audio_in, (uint32_t)frames);
+    /* Deferred JACK connection: crone won't have ports when plugin loads.
+     * Retry every ~1 second until connected. */
+    if (!inst->jack_client && inst->pw_running) {
+        uint64_t now = now_ms();
+        if (now - inst->jack_retry_ms > 1000) {
+            inst->jack_retry_ms = now;
+            jack_client_init(inst);
+        }
     }
 
-    /* SHM zero-copy path: read directly from shared memory ring.
+    /* SHM zero-copy path: JACK callback writes here, we read.
      * No syscalls, no intermediate ring buffer, no FIFO overhead. */
     if (inst->shm_audio) {
         got = shm_read(inst->shm_audio, out_interleaved_lr, (uint32_t)frames);
@@ -1614,10 +1608,6 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
             if (now > inst->last_audio_ms && (now - inst->last_audio_ms) > AUDIO_IDLE_MS)
                 inst->receiving_audio = false;
         }
-    } else {
-        /* FIFO fallback */
-        pump_pipe(inst);
-        got = ring_pop(inst, out_interleaved_lr, needed);
     }
 
     if (inst->gain != 1.0f && got > 0) {
