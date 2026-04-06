@@ -1067,6 +1067,223 @@ static void check_pw_alive(norns_instance_t *inst) {
     }
 }
 
+/* ── JACK Audio/MIDI Client ──────────────────────────── */
+
+static int jack_process_cb(jack_nframes_t nframes, void *arg) {
+    norns_instance_t *inst = (norns_instance_t *)arg;
+    if (!inst) return 0;
+
+    /* ── Audio output: crone → SHM ring (for render_block) ── */
+    if (inst->jack_audio_out_L && inst->jack_audio_out_R && inst->shm_audio) {
+        jack_default_audio_sample_t *in_L =
+            (jack_default_audio_sample_t *)jack_port_get_buffer(inst->jack_audio_out_L, nframes);
+        jack_default_audio_sample_t *in_R =
+            (jack_default_audio_sample_t *)jack_port_get_buffer(inst->jack_audio_out_R, nframes);
+        if (in_L && in_R) {
+            /* Convert F32 interleaved → S16LE for SHM ring */
+            int16_t buf[2048];  /* max 1024 stereo frames per call */
+            jack_nframes_t todo = nframes;
+            jack_nframes_t off = 0;
+            while (todo > 0) {
+                jack_nframes_t chunk = (todo > 1024) ? 1024 : todo;
+                jack_nframes_t i;
+                for (i = 0; i < chunk; i++) {
+                    float sL = in_L[off + i] * 32767.0f;
+                    float sR = in_R[off + i] * 32767.0f;
+                    if (sL > 32767.0f) sL = 32767.0f;
+                    if (sL < -32768.0f) sL = -32768.0f;
+                    if (sR > 32767.0f) sR = 32767.0f;
+                    if (sR < -32768.0f) sR = -32768.0f;
+                    buf[i * 2]     = (int16_t)sL;
+                    buf[i * 2 + 1] = (int16_t)sR;
+                }
+                shm_write(inst->shm_audio, buf, chunk);
+                off += chunk;
+                todo -= chunk;
+            }
+        }
+    }
+
+    /* ── Audio input: system capture → SHM ring (for crone) ── */
+    if (inst->audio_in_enabled && inst->jack_audio_in_L &&
+        inst->jack_audio_in_R && inst->shm_audio_in) {
+        jack_default_audio_sample_t *cap_L =
+            (jack_default_audio_sample_t *)jack_port_get_buffer(inst->jack_audio_in_L, nframes);
+        jack_default_audio_sample_t *cap_R =
+            (jack_default_audio_sample_t *)jack_port_get_buffer(inst->jack_audio_in_R, nframes);
+        if (cap_L && cap_R) {
+            int16_t buf[2048];
+            jack_nframes_t todo = nframes;
+            jack_nframes_t off = 0;
+            while (todo > 0) {
+                jack_nframes_t chunk = (todo > 1024) ? 1024 : todo;
+                jack_nframes_t i;
+                for (i = 0; i < chunk; i++) {
+                    float sL = cap_L[off + i] * 32767.0f;
+                    float sR = cap_R[off + i] * 32767.0f;
+                    if (sL > 32767.0f) sL = 32767.0f;
+                    if (sL < -32768.0f) sL = -32768.0f;
+                    if (sR > 32767.0f) sR = 32767.0f;
+                    if (sR < -32768.0f) sR = -32768.0f;
+                    buf[i * 2]     = (int16_t)sL;
+                    buf[i * 2 + 1] = (int16_t)sR;
+                }
+                shm_write(inst->shm_audio_in, buf, chunk);
+                off += chunk;
+                todo -= chunk;
+            }
+        }
+    }
+
+    /* ── MIDI input: JACK → MIDI input FIFO (for norns-input-bridge) ── */
+    if (inst->jack_midi_in && inst->fifo_midi_in_fd >= 0) {
+        void *midi_buf = jack_port_get_buffer(inst->jack_midi_in, nframes);
+        if (midi_buf) {
+            jack_nframes_t count = jack_midi_get_event_count(midi_buf);
+            jack_nframes_t ev;
+            for (ev = 0; ev < count; ev++) {
+                jack_midi_event_t event;
+                if (jack_midi_event_get(&event, midi_buf, ev) == 0 &&
+                    event.size > 0 && event.size <= 4096) {
+                    /* 2-byte LE length prefix + raw MIDI bytes */
+                    uint8_t frame[4098];
+                    uint16_t ulen = (uint16_t)event.size;
+                    frame[0] = (uint8_t)(ulen & 0xFF);
+                    frame[1] = (uint8_t)((ulen >> 8) & 0xFF);
+                    memcpy(frame + 2, event.buffer, event.size);
+                    (void)write(inst->fifo_midi_in_fd, frame, 2 + event.size);
+                }
+            }
+        }
+    }
+
+    /* ── MIDI output: matron FIFO → JACK MIDI out + host skipback ── */
+    if (inst->jack_midi_out && inst->fifo_midi_out_fd >= 0) {
+        void *midi_out_buf = jack_port_get_buffer(inst->jack_midi_out, nframes);
+        jack_midi_clear_buffer(midi_out_buf);
+
+        /* Read from matron's output FIFO (non-blocking) */
+        uint8_t tmp[512];
+        while (1) {
+            size_t space = sizeof(inst->midi_out_buf) - inst->midi_out_buf_len;
+            if (space == 0) break;
+            ssize_t n = read(inst->fifo_midi_out_fd, tmp,
+                             space < sizeof(tmp) ? space : sizeof(tmp));
+            if (n <= 0) break;
+            memcpy(inst->midi_out_buf + inst->midi_out_buf_len, tmp, (size_t)n);
+            inst->midi_out_buf_len += (uint16_t)n;
+        }
+
+        /* Parse length-prefixed messages and send */
+        size_t pos = 0;
+        while (pos + 2 <= inst->midi_out_buf_len) {
+            uint16_t msg_len = (uint16_t)inst->midi_out_buf[pos]
+                             | ((uint16_t)inst->midi_out_buf[pos + 1] << 8);
+            if (msg_len == 0) { pos += 2; continue; }
+            if (pos + 2 + msg_len > inst->midi_out_buf_len) break;
+
+            /* Send via JACK MIDI */
+            jack_midi_data_t *jack_ev =
+                jack_midi_event_reserve(midi_out_buf, 0, msg_len);
+            if (jack_ev)
+                memcpy(jack_ev, inst->midi_out_buf + pos + 2, msg_len);
+
+            /* Also send via host for Schwung skipback */
+            if (g_host && g_host->send_midi_internal)
+                g_host->send_midi_internal(inst->midi_out_buf + pos + 2, msg_len);
+
+            pos += 2 + msg_len;
+        }
+
+        /* Compact remaining bytes */
+        if (pos > 0 && pos < inst->midi_out_buf_len) {
+            memmove(inst->midi_out_buf, inst->midi_out_buf + pos,
+                    inst->midi_out_buf_len - pos);
+            inst->midi_out_buf_len -= (uint16_t)pos;
+        } else if (pos >= inst->midi_out_buf_len) {
+            inst->midi_out_buf_len = 0;
+        }
+    }
+
+    return 0;
+}
+
+static int jack_client_init(norns_instance_t *inst) {
+    jack_status_t status;
+    char name[32];
+
+    if (!inst) return -1;
+    if (inst->jack_client) return 0;  /* already connected */
+
+    snprintf(name, sizeof(name), "norns-%d", inst->slot);
+    inst->jack_client = jack_client_open(name, JackNoStartServer, &status);
+    if (!inst->jack_client) {
+        char dbg[128];
+        snprintf(dbg, sizeof(dbg), "jack_client_open failed: status=0x%x", (unsigned)status);
+        pw_log(dbg);
+        return -1;
+    }
+
+    /* Register audio ports — "out" from crone's perspective is "input" to us */
+    inst->jack_audio_out_L = jack_port_register(inst->jack_client, "audio_from_crone_L",
+        JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
+    inst->jack_audio_out_R = jack_port_register(inst->jack_client, "audio_from_crone_R",
+        JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
+    inst->jack_audio_in_L = jack_port_register(inst->jack_client, "audio_to_crone_L",
+        JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
+    inst->jack_audio_in_R = jack_port_register(inst->jack_client, "audio_to_crone_R",
+        JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
+
+    /* Register MIDI ports */
+    inst->jack_midi_in = jack_port_register(inst->jack_client, "midi_in",
+        JACK_DEFAULT_MIDI_TYPE, JackPortIsInput, 0);
+    inst->jack_midi_out = jack_port_register(inst->jack_client, "midi_out",
+        JACK_DEFAULT_MIDI_TYPE, JackPortIsOutput, 0);
+
+    /* Set process callback and activate */
+    jack_set_process_callback(inst->jack_client, jack_process_cb, inst);
+
+    if (jack_activate(inst->jack_client) != 0) {
+        pw_log("jack_activate failed");
+        jack_client_close(inst->jack_client);
+        inst->jack_client = NULL;
+        return -1;
+    }
+
+    pw_log("JACK client activated — connecting ports");
+
+    /* Connect ports (non-fatal if some fail — crone may not be ready yet) */
+    jack_connect(inst->jack_client, "crone:output_1",
+                 jack_port_name(inst->jack_audio_out_L));
+    jack_connect(inst->jack_client, "crone:output_2",
+                 jack_port_name(inst->jack_audio_out_R));
+    jack_connect(inst->jack_client, jack_port_name(inst->jack_audio_in_L),
+                 "crone:input_1");
+    jack_connect(inst->jack_client, jack_port_name(inst->jack_audio_in_R),
+                 "crone:input_2");
+    jack_connect(inst->jack_client, "system:midi_capture_1",
+                 jack_port_name(inst->jack_midi_in));
+    jack_connect(inst->jack_client, jack_port_name(inst->jack_midi_out),
+                 "system:midi_playback_1");
+
+    pw_log("JACK client init complete");
+    return 0;
+}
+
+static void jack_client_shutdown(norns_instance_t *inst) {
+    if (!inst || !inst->jack_client) return;
+    pw_log("JACK client shutting down");
+    jack_deactivate(inst->jack_client);
+    jack_client_close(inst->jack_client);
+    inst->jack_client = NULL;
+    inst->jack_audio_out_L = NULL;
+    inst->jack_audio_out_R = NULL;
+    inst->jack_audio_in_L = NULL;
+    inst->jack_audio_in_R = NULL;
+    inst->jack_midi_in = NULL;
+    inst->jack_midi_out = NULL;
+}
+
 /* ── Plugin API v2 Implementation ─────────────────────── */
 
 static void *v2_create_instance(const char *module_dir, const char *json_defaults) {
