@@ -31,13 +31,30 @@ for fs in proc sys dev dev/pts tmp; do
     esac
 done
 
-# Step 1: Reset norns source to upstream
+# Step 1: Reset norns source to upstream (if git repo exists)
 echo ""
 echo "--- Resetting norns source ---"
-chrt -o 0 chroot "$CHROOT" su - move -c '
-    cd /home/we/norns
-    git -c safe.directory=/home/we/norns checkout -- matron/src/ crone/src/ wscript matron/wscript
-'
+if [ -d "$CHROOT/home/we/norns/.git" ]; then
+    chrt -o 0 chroot "$CHROOT" su - move -c '
+        cd /home/we/norns
+        git -c safe.directory=/home/we/norns checkout -- matron/src/ crone/src/ wscript matron/wscript
+    '
+else
+    echo "  No .git directory — cloning norns source"
+    chrt -o 0 chroot "$CHROOT" su - move -c '
+        cd /home/we
+        if [ -d norns ]; then mv norns norns-prebuilt; fi
+        git clone https://github.com/monome/norns.git
+        cd norns
+        git submodule update --init --recursive
+        # Restore pre-built assets not in git (maiden, matronrc, dust, etc.)
+        if [ -d ../norns-prebuilt ]; then
+            for d in matronrc.lua; do
+                [ -f "../norns-prebuilt/$d" ] && cp "../norns-prebuilt/$d" .
+            done
+        fi
+    '
+fi
 
 # Step 2: Apply Move patches
 echo ""
