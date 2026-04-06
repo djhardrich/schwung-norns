@@ -6,7 +6,6 @@ set -e
 FIFO_PLAYBACK="$1"
 SLOT="${2:-1}"
 CHROOT="/data/UserData/pw-chroot"
-PW_CONF_DIR="$CHROOT/etc/pipewire/pipewire.conf.d"
 PID_DIR="/tmp/norns-pids-${SLOT}"
 RUNTIME_DIR="/tmp/pw-runtime-${SLOT}"
 
@@ -28,9 +27,6 @@ for fs in proc sys dev dev/pts tmp; do
         tmp)     mountpoint -q "$CHROOT/tmp"     2>/dev/null || mount --bind /tmp "$CHROOT/tmp" ;;
     esac
 done
-
-# Remove stale pipe-tunnel config (we use jack-fifo-bridge instead)
-rm -f "$PW_CONF_DIR/move-bridge-${SLOT}.conf" 2>/dev/null
 
 # Set up runtime dir
 mkdir -p "$CHROOT/$RUNTIME_DIR"
@@ -68,35 +64,23 @@ wait_for() {
             dbus-daemon --system --fork 2>/dev/null || true
         fi
     "
-    # Start dbus session bus (check socket, not process — system bus may be running)
-    if [ ! -e "$CHROOT/$RUNTIME_DIR/dbus-pw" ]; then
-        chrt -o 0 chroot "$CHROOT" su - move -c "
-            export XDG_RUNTIME_DIR=$RUNTIME_DIR
-            dbus-daemon --session --fork --address=unix:path=${RUNTIME_DIR}/dbus-pw 2>/dev/null || true
-        "
-    fi
-    wait_for "$CHROOT/$RUNTIME_DIR/dbus-pw" 5 || true
 
-    # Start PipeWire (skip if already running)
-    if ! chroot "$CHROOT" pgrep -x pipewire >/dev/null 2>&1; then
-        chrt -o 0 chroot "$CHROOT" su - move -c "
-            export XDG_RUNTIME_DIR=$RUNTIME_DIR
-            export DBUS_SESSION_BUS_ADDRESS=unix:path=${RUNTIME_DIR}/dbus-pw
-            nohup /usr/bin/pipewire >/dev/null 2>&1 &
-            echo \$! > /tmp/norns-pids-${SLOT}/pipewire.pid
-        "
-        wait_for "$CHROOT/$RUNTIME_DIR/pipewire-0" 10 || true
+    # Start jackd (from RNBO Takeover)
+    JACKD="/data/UserData/rnbo/bin/jackd"
+    if [ -x "$JACKD" ] && ! pgrep -x jackd >/dev/null 2>&1; then
+        chrt -o 0 "$JACKD" -d move -r 44100 -p 128 &
+        echo $! > "$PID_DIR/jackd.pid"
+        sleep 2  # wait for JACK server to initialize
+        echo "jackd started"
+    elif pgrep -x jackd >/dev/null 2>&1; then
+        echo "jackd already running"
+    else
+        echo "ERROR: jackd not found at $JACKD — install RNBO Takeover for Move" >&2
     fi
 
-    # Start WirePlumber (skip if already running)
-    if ! chroot "$CHROOT" pgrep -x wireplumber >/dev/null 2>&1; then
-        chrt -o 0 chroot "$CHROOT" su - move -c "
-            export XDG_RUNTIME_DIR=$RUNTIME_DIR
-            export DBUS_SESSION_BUS_ADDRESS=unix:path=${RUNTIME_DIR}/dbus-pw
-            nohup /usr/bin/wireplumber >/dev/null 2>&1 &
-            echo \$! > /tmp/norns-pids-${SLOT}/wireplumber.pid
-        "
-        sleep 2
+    # Ensure /dev/shm is accessible from chroot for JACK SHM transport
+    if ! mountpoint -q "$CHROOT/dev/shm" 2>/dev/null; then
+        mount --bind /dev/shm "$CHROOT/dev/shm" || true
     fi
 
     # Remove 32-bit SC plugins that crash scsynth on 64-bit Move.
@@ -111,9 +95,8 @@ wait_for() {
     if [ -x "$CHROOT/home/we/norns/build/crone/crone" ]; then
         chrt -o 0 chroot "$CHROOT" su - move -c "
             export XDG_RUNTIME_DIR=$RUNTIME_DIR
-            export DBUS_SESSION_BUS_ADDRESS=unix:path=${RUNTIME_DIR}/dbus-pw
             cd /home/we/norns
-            nohup pw-jack-physical ./build/crone/crone >/dev/null 2>&1 &
+            nohup ./build/crone/crone >/dev/null 2>&1 &
             echo \$! > /tmp/norns-pids-${SLOT}/crone.pid
         "
         sleep 2
@@ -127,11 +110,10 @@ wait_for() {
     if [ -x "$CHROOT/home/we/norns/build/matron/matron" ]; then
         chrt -o 0 chroot "$CHROOT" su - move -c "
             export XDG_RUNTIME_DIR=$RUNTIME_DIR
-            export DBUS_SESSION_BUS_ADDRESS=unix:path=${RUNTIME_DIR}/dbus-pw
             export NORNS_SCREEN_FIFO=/tmp/norns-screen-${SLOT}
             export NORNS_INPUT_FIFO=/tmp/norns-input-${SLOT}
             cd /home/we/norns
-            nohup pw-jack-physical ./build/ws-wrapper/ws-wrapper ws://*:5555 ./build/matron/matron >/dev/null 2>&1 &
+            nohup ./build/ws-wrapper/ws-wrapper ws://*:5555 ./build/matron/matron >/dev/null 2>&1 &
             echo \$! > /tmp/norns-pids-${SLOT}/matron.pid
         "
         sleep 1
@@ -142,10 +124,9 @@ wait_for() {
     if chroot "$CHROOT" which sclang >/dev/null 2>&1; then
         chrt -o 0 chroot "$CHROOT" su - move -c "
             export XDG_RUNTIME_DIR=$RUNTIME_DIR
-            export DBUS_SESSION_BUS_ADDRESS=unix:path=${RUNTIME_DIR}/dbus-pw
             export QT_QPA_PLATFORM=offscreen
             cd /home/we/norns
-            nohup pw-jack-physical ./build/ws-wrapper/ws-wrapper ws://*:5556 sclang -l /home/we/norns/sclang_conf.yaml >/dev/null 2>&1 &
+            nohup ./build/ws-wrapper/ws-wrapper ws://*:5556 sclang -l /home/we/norns/sclang_conf.yaml >/dev/null 2>&1 &
             echo \$! > /tmp/norns-pids-${SLOT}/sclang.pid
         "
         # Wait for scsynth to connect to JACK (visible as SuperCollider ports).
@@ -154,8 +135,7 @@ wait_for() {
         while [ $_sc_wait -lt 45 ]; do
             if chroot "$CHROOT" su - move -c "
                 export XDG_RUNTIME_DIR=$RUNTIME_DIR
-                export DBUS_SESSION_BUS_ADDRESS=unix:path=${RUNTIME_DIR}/dbus-pw
-                pw-jack jack_lsp 2>/dev/null | grep -q SuperCollider" 2>/dev/null; then
+                jack_lsp 2>/dev/null | grep -q SuperCollider" 2>/dev/null; then
                 echo "SuperCollider JACK ports found (waited ${_sc_wait}s)"
                 break
             fi
@@ -168,8 +148,7 @@ wait_for() {
         echo "WARN: sclang not found, starting scsynth directly (no engines)"
         chrt -o 0 chroot "$CHROOT" su - move -c "
             export XDG_RUNTIME_DIR=$RUNTIME_DIR
-            export DBUS_SESSION_BUS_ADDRESS=unix:path=${RUNTIME_DIR}/dbus-pw
-            nohup pw-jack-physical scsynth -u 57110 -a 128 -i 2 -o 2 -r 44100 -z 128 -Z 128 >/dev/null 2>&1 &
+            nohup scsynth -u 57110 -a 128 -i 2 -o 2 -r 44100 -z 128 -Z 128 >/dev/null 2>&1 &
             echo \$! > /tmp/norns-pids-${SLOT}/scsynth.pid
         "
         sleep 3
@@ -185,18 +164,8 @@ wait_for() {
         while [ $_cr_wait -lt 60 ]; do
             if chroot "$CHROOT" su - move -c "
                 export XDG_RUNTIME_DIR=$RUNTIME_DIR
-                export DBUS_SESSION_BUS_ADDRESS=unix:path=${RUNTIME_DIR}/dbus-pw
-                pw-jack jack_lsp 2>/dev/null | grep -q SuperCollider" 2>/dev/null; then
+                jack_lsp 2>/dev/null | grep -q SuperCollider" 2>/dev/null; then
                 sleep 8  # Let CroneDefs + AudioContext finish
-                # Start JACK→FIFO bridge (replaces broken PipeWire pipe-tunnel).
-                # Connects to crone:output_1/2, converts F32→S16LE, writes to FIFO.
-                chrt -o 0 chroot "$CHROOT" su - move -c "
-                    export XDG_RUNTIME_DIR=$RUNTIME_DIR
-                    export DBUS_SESSION_BUS_ADDRESS=unix:path=${RUNTIME_DIR}/dbus-pw
-                    nohup pw-jack /usr/local/bin/jack-fifo-bridge /tmp/pw-to-move-${SLOT} >/dev/null 2>&1 &
-                    echo \$! > /tmp/norns-pids-${SLOT}/jack-fifo-bridge.pid
-                " 2>/dev/null
-                echo "Started jack-fifo-bridge"
                 # Send /crone/ready OSC message to matron (port 8888)
                 chroot "$CHROOT" python3 -c "
 import socket, struct
@@ -215,12 +184,12 @@ s.close()
         done
     ) &
 
-    # Start norns-input-bridge (sends OSC to matron instead of FIFO,
-    # because matron's GPIO input driver isn't initialized on Move)
+    # Start norns-input-bridge (JACK MIDI client for encoder/key translation)
+    INPUT_FIFO="/tmp/norns-input-${SLOT}"
     MIDI_IN_FIFO="/tmp/midi-to-chroot-${SLOT}"
-    if [ -e "$MIDI_IN_FIFO" ]; then
+    if [ -e "$INPUT_FIFO" ]; then
         chrt -o 0 chroot "$CHROOT" su - move -c "
-            nohup /usr/local/bin/norns-input-bridge $MIDI_IN_FIFO /tmp/norns-input-${SLOT} >/dev/null 2>&1 &
+            nohup /usr/local/bin/norns-input-bridge $INPUT_FIFO $MIDI_IN_FIFO >/dev/null 2>&1 &
             echo \$! > /tmp/norns-pids-${SLOT}/norns-input-bridge.pid
         "
     fi
@@ -230,7 +199,6 @@ s.close()
     if [ -e "$MIDI_IN_FIFO" ] && [ -e "$MIDI_OUT_FIFO" ] && [ -x "$CHROOT/usr/local/bin/midi-bridge" ]; then
         chrt -o 0 chroot "$CHROOT" su - move -c "
             export XDG_RUNTIME_DIR=$RUNTIME_DIR
-            export DBUS_SESSION_BUS_ADDRESS=unix:path=${RUNTIME_DIR}/dbus-pw
             nohup /usr/local/bin/midi-bridge $MIDI_IN_FIFO $MIDI_OUT_FIFO >/dev/null 2>&1 &
             echo \$! > /tmp/norns-pids-${SLOT}/midi-bridge.pid
         "
@@ -247,7 +215,7 @@ s.close()
 
     # Renice audio-critical processes to highest non-RT priority.
     # (SCHED_RR/FIFO gets processes killed by Move's watchdog.)
-    for proc in pipewire wireplumber crone matron sclang scsynth jack-fifo-bridge; do
+    for proc in jackd crone matron sclang scsynth; do
         for pid in $(chroot "$CHROOT" pgrep -x "$proc" 2>/dev/null); do
             renice -n -20 -p "$pid" >/dev/null 2>&1
         done

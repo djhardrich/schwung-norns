@@ -2,7 +2,7 @@
 
 Run [Monome Norns](https://monome.org/docs/norns/) — the open-source sound computer — as a module on Ableton Move hardware via [Schwung](https://github.com/charlesvestal/schwung).
 
-Norns runs inside a Debian chroot alongside Move's native firmware. Audio, MIDI, screen, and controls are bridged between the two systems through FIFOs and PipeWire's JACK compatibility layer.
+Norns runs inside a Debian chroot alongside Move's native firmware. Audio, MIDI, screen, and controls are bridged between the two systems through the Move's JACK2 audio server (provided by RNBO Takeover).
 
 ## Quick Install Instructions (tested with Linux and Mac OS and Move 2.0 beta)
 
@@ -17,7 +17,9 @@ Norns runs inside a Debian chroot alongside Move's native firmware. Audio, MIDI,
 
 1. **[Schwung](https://github.com/charlesvestal/schwung)** — the host runtime that loads third-party modules on Move hardware.
 
-2. **[Schwung Installer](https://github.com/charlesvestal/schwung-installer)** — provides the Debian chroot (either command-line or desktop variant) and PipeWire audio infrastructure. Install using the install script from that repo before proceeding.
+2. **[Schwung Installer](https://github.com/charlesvestal/schwung-installer)** — provides the Debian chroot (either command-line or desktop variant). Install using the install script from that repo before proceeding.
+
+3. **[RNBO Takeover for Move](https://cycling74.com/products/rnbo)** — provides the JACK2 audio server (`/data/UserData/rnbo/bin/jackd`) that norns connects to for audio and MIDI I/O. Must be installed before running schwung-norns.
 
 ## Install
 
@@ -116,20 +118,21 @@ The current setting flashes briefly at the bottom of the screen when changed.
 ┌─────────────────────────────────────────────────────────────┐
 │  Move Hardware (host)                                       │
 │  ┌─────────────────────────────────────────────────────┐    │
-│  │  DSP Plugin (norns_plugin.c)                        │    │
-│  │  - Ring buffer: FIFO → render_block() → speakers    │    │
-│  │  - Screen: 4-bit grayscale → 1-bit dithered mono    │    │
-│  │  - Grid LEDs: 16x8 buffer → pad LED colors          │    │
+│  │  DSP Plugin (norns_plugin.c) — JACK client            │    │
+│  │  - JACK audio: crone → SHM ring → render_block()     │    │
+│  │  - JACK MIDI: system:midi_capture ↔ midi_playback    │    │
+│  │  - Screen: 4-bit grayscale → 1-bit dithered mono     │    │
+│  │  - Grid LEDs: 16x8 buffer → pad LED colors           │    │
 │  └─────────────────────────────────────────────────────┘    │
-│            ↕ FIFOs (/tmp/pw-to-move-*, norns-screen-*, etc) │
+│            ↕ JACK + FIFOs (screen, input, grid)             │
 │  ┌─────────────────────────────────────────────────────┐    │
-│  │  Debian Chroot (PipeWire + JACK)                    │    │
+│  │  jackd (/data/UserData/rnbo/bin/jackd)              │    │
+│  │  Debian Chroot                                       │    │
 │  │  ┌───────────┐ ┌──────────┐ ┌───────────────────┐   │    │
 │  │  │  matron    │ │  crone   │ │ sclang + scsynth  │   │    │
 │  │  │  (Lua UI)  │ │  (audio) │ │ (SuperCollider)   │   │    │
 │  │  └───────────┘ └──────────┘ └───────────────────┘   │    │
-│  │  jack-fifo-bridge: crone:output → S16LE → FIFO      │    │
-│  │  norns-input-bridge: MIDI → enc/key/MIDI/grid events │    │
+│  │  norns-input-bridge: JACK MIDI → enc/key/grid events │    │
 │  └─────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -138,7 +141,7 @@ The current setting flashes briefly at the bottom of the screen when changed.
 
 Most Norns scripts work. Known limitations:
 
-- **No audio input** — Move's mic/line-in is not bridged to Norns
+- **Audio input supported (v0.4.0)** — norns scripts that use audio input (recording, sampling, live processing) can now access the Move's mic/line input via `system:capture`
 - **No USB MIDI devices** — only Move's own pads/knobs are available as MIDI input
 - **No real Monome grid** — the grid emulator covers basic grid scripts but is 8x4 (paged) not 16x8 simultaneous
 - **Community SC plugins supported** — PortedPlugins, mi-UGens, f0plugins, and 7 other collections are compiled natively for Move's 64-bit ARM. Scripts like AmenBreak work with their custom engines. Set `SC_PLUGINS_BUILD_FROM_SOURCE=1` to rebuild from source if needed.
@@ -148,7 +151,7 @@ Most Norns scripts work. Known limitations:
 
 ### Building the Module (host machine)
 
-The DSP plugin, pw-helper, norns-input-bridge, and jack-fifo-bridge are cross-compiled for ARM64 in Docker:
+The DSP plugin, pw-helper, and norns-input-bridge are cross-compiled for ARM64 in Docker:
 
 ```bash
 ./scripts/build.sh          # Cross-compile → dist/norns-module.tar.gz
@@ -197,7 +200,7 @@ Upload all three tarballs to GitHub Releases, then update `PREBUILT_URL` and `SC
 
 - Maiden web IDE: `http://move.local:5000` (when module is running)
 - Debug logs: `/tmp/norns-audio-debug.log`, `/tmp/norns-dsp-debug.log`, `/tmp/pw-start.log`
-- PipeWire config: `/data/UserData/pw-chroot/etc/pipewire/pipewire.conf.d/`
+- JACK server: `/data/UserData/rnbo/bin/jackd` (from RNBO Takeover)
 
 ## License
 
