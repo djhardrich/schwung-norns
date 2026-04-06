@@ -12,10 +12,10 @@ MODULE_DIR="/data/UserData/schwung/modules/tools/norns"
 BUILD_FROM_SOURCE="${NORNS_BUILD_FROM_SOURCE:-0}"
 
 # Pre-built binary URL — update this when publishing a new release
-PREBUILT_URL="https://github.com/djhardrich/schwung-norns/releases/download/v0.2.0/norns-move-prebuilt.tar.gz"
+PREBUILT_URL="https://github.com/djhardrich/schwung-norns/releases/download/v0.4.0/norns-move-prebuilt.tar.gz"
 
 # Pre-built 64-bit SC plugins URL — update this when publishing a new release
-SC_PLUGINS_URL="https://github.com/seajaysec/sc-plugins-arm64/releases/download/v0.1.0/sc-plugins-arm64.tar.gz"
+SC_PLUGINS_URL="https://github.com/djhardrich/schwung-norns/releases/download/v0.4.0/sc-plugins-arm64.tar.gz"
 SC_PLUGINS_BUILD="${SC_PLUGINS_BUILD_FROM_SOURCE:-0}"
 
 if [ ! -d "$CHROOT/usr" ]; then
