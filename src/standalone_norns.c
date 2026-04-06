@@ -469,7 +469,8 @@ static void process_spi_midi_in(void) {
 }
 
 static void process_midi_out_to_spi(void) {
-    /* Read from norns MIDI output FIFO, write to SPI output MIDI region */
+    /* Read from norns MIDI output FIFO, write to both SPI (pad LEDs) and
+     * JACK MIDI ring (external devices).  Must be the sole FIFO reader. */
     if (g_fifo_midi_from_chroot < 0) return;
 
     SchwungUsbMidiMsg *out_slots = (SchwungUsbMidiMsg *)(g_spi_buf + SCHWUNG_OFF_OUT_MIDI);
@@ -485,17 +486,30 @@ static void process_midi_out_to_spi(void) {
         n = read(g_fifo_midi_from_chroot, msg, len);
         if (n != (ssize_t)len) break;
 
+        /* Write to SPI output for pad LEDs */
         SchwungMidiMsg midi_msg;
         midi_msg.type = (msg[0] >> 4) & 0x0F;
         midi_msg.channel = msg[0] & 0x0F;
         midi_msg.data1 = (len > 1) ? msg[1] : 0;
         midi_msg.data2 = (len > 2) ? msg[2] : 0;
 
-        /* CIN = message type for USB MIDI */
         out_slots[slot_idx].cin = midi_msg.type;
         out_slots[slot_idx].cable = 0;
         out_slots[slot_idx].midi = midi_msg;
         slot_idx++;
+
+        /* Also enqueue to JACK MIDI ring for external routing */
+        uint32_t wr = __atomic_load_n(&g_midi_out_wr, __ATOMIC_RELAXED);
+        uint32_t rd = __atomic_load_n(&g_midi_out_rd, __ATOMIC_ACQUIRE);
+        uint32_t mask = sizeof(g_midi_out_ring) - 1;
+        uint32_t space = sizeof(g_midi_out_ring) - ((wr - rd) & mask);
+        if (space >= len + 2u) {
+            g_midi_out_ring[wr & mask] = (uint8_t)(len & 0xFF);
+            g_midi_out_ring[(wr + 1) & mask] = (uint8_t)((len >> 8) & 0xFF);
+            for (uint16_t j = 0; j < len; j++)
+                g_midi_out_ring[(wr + 2 + j) & mask] = msg[j];
+            __atomic_store_n(&g_midi_out_wr, wr + 2 + len, __ATOMIC_RELEASE);
+        }
     }
 }
 
@@ -522,31 +536,6 @@ static void drain_midi_in_ring(void) {
     __atomic_store_n(&g_midi_in_rd, rd, __ATOMIC_RELEASE);
 }
 
-/* Pump norns MIDI output FIFO -> JACK ring */
-static void pump_midi_out_to_ring(void) {
-    if (g_fifo_midi_from_chroot < 0) return;
-    uint8_t hdr[2];
-    for (int i = 0; i < 32; i++) {
-        ssize_t n = read(g_fifo_midi_from_chroot, hdr, 2);
-        if (n != 2) break;
-        uint16_t len = hdr[0] | ((uint16_t)hdr[1] << 8);
-        if (len == 0 || len > 3) break;
-        uint8_t msg[3] = {0};
-        n = read(g_fifo_midi_from_chroot, msg, len);
-        if (n != (ssize_t)len) break;
-
-        uint32_t wr = __atomic_load_n(&g_midi_out_wr, __ATOMIC_RELAXED);
-        uint32_t rd = __atomic_load_n(&g_midi_out_rd, __ATOMIC_ACQUIRE);
-        uint32_t mask = sizeof(g_midi_out_ring) - 1;
-        uint32_t space = sizeof(g_midi_out_ring) - ((wr - rd) & mask);
-        if (space < len + 2u) break;
-        g_midi_out_ring[wr & mask] = (uint8_t)(len & 0xFF);
-        g_midi_out_ring[(wr + 1) & mask] = (uint8_t)((len >> 8) & 0xFF);
-        for (uint16_t j = 0; j < len; j++)
-            g_midi_out_ring[(wr + 2 + j) & mask] = msg[j];
-        __atomic_store_n(&g_midi_out_wr, wr + 2 + len, __ATOMIC_RELEASE);
-    }
-}
 
 /* ── Screen -> SPI Display ── */
 
@@ -721,10 +710,7 @@ int main(int argc, char *argv[]) {
         /* Drain JACK MIDI ring -> norns FIFO */
         drain_midi_in_ring();
 
-        /* Pump norns MIDI out FIFO -> JACK ring */
-        pump_midi_out_to_ring();
-
-        /* Process MIDI: norns -> SPI */
+        /* Process MIDI: norns -> SPI + JACK ring */
         process_midi_out_to_spi();
 
         /* Process display */
