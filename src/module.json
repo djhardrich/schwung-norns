@@ -1,28 +1,9 @@
 {
   "id": "norns",
   "name": "Norns",
-  "abbrev": "NR",
   "version": "0.4.0",
   "description": "Monome Norns — SuperCollider + Lua sound computer on Move",
   "author": "DJ Hard Rich",
-  "license": "GPL v3",
-  "ui": "ui.js",
-  "dsp": "dsp.so",
-  "api_version": 2,
-  "raw_midi": true,
   "component_type": "tool",
-  "standalone": true,
-  "tool_config": {
-    "interactive": true,
-    "skip_file_browser": true
-  },
-  "capabilities": {
-    "audio_out": true,
-    "audio_in": true,
-    "midi_in": true,
-    "midi_out": true
-  },
-  "defaults": {
-    "gain": 1.0
-  }
+  "standalone": true
 }
