@@ -105,18 +105,32 @@ done
 # Step 5: Build Maiden web UI
 echo ""
 echo "--- Building Maiden web UI ---"
-# Clone maiden if not present (prebuilt installs don't include source)
-if [ ! -d "$CHROOT/home/we/maiden/.git" ]; then
-    echo "  Cloning maiden..."
+# Clone maiden source if web/ dir is missing (need it for frontend build)
+if [ ! -d "$CHROOT/home/we/maiden/web" ]; then
+    echo "  Cloning maiden source (for web UI build)..."
+    # Preserve existing maiden binary if present
+    if [ -f "$CHROOT/home/we/maiden/maiden" ]; then
+        cp "$CHROOT/home/we/maiden/maiden" /tmp/maiden-binary-backup
+    fi
     chrt -o 0 chroot "$CHROOT" su - move -c '
         cd /home/we
-        if [ ! -d maiden ]; then
-            git clone https://github.com/monome/maiden.git
-        fi
-        cd maiden
-        mkdir -p /home/we/go-cache
-        GOCACHE=/home/we/go-cache GOTMPDIR=/home/we/go-cache go build -o maiden .
+        rm -rf maiden
+        git clone https://github.com/monome/maiden.git
     '
+    # Restore maiden binary (skip expensive Go build)
+    if [ -f /tmp/maiden-binary-backup ]; then
+        cp /tmp/maiden-binary-backup "$CHROOT/home/we/maiden/maiden"
+        chmod +x "$CHROOT/home/we/maiden/maiden"
+        rm -f /tmp/maiden-binary-backup
+        echo "  Restored existing maiden binary (skipped Go build)"
+    else
+        echo "  Building maiden Go binary..."
+        chrt -o 0 chroot "$CHROOT" su - move -c '
+            cd /home/we/maiden
+            mkdir -p /home/we/go-cache
+            GOCACHE=/home/we/go-cache GOTMPDIR=/home/we/go-cache go build -o maiden .
+        '
+    fi
 fi
 chroot "$CHROOT" sh -c 'cd /tmp && npm install -g yarn'
 chrt -o 0 chroot "$CHROOT" su - move -c '
