@@ -59,11 +59,11 @@
  * This is separate from Schwung's 1-bit display mirror so the laptop viewer
  * can prefer grayscale norns frames without affecting the Move OLED path. */
 #define NORNS_DISPLAY_SHM_NAME "/schwung-norns-display-live"
-#define NORNS_DISPLAY_SHM_BYTES (128 * 64 / 2)
+#define NORNS_DISPLAY_SHM_BYTES 4096  /* 128 * 64 / 2 (4-bit packed) */
 #define NORNS_DISPLAY_MAGIC "NR4SHM1"
-#define NORNS_DISPLAY_FORMAT "gray4_packed"
+#define NORNS_DISPLAY_FORMAT "gray4"
 
-typedef struct {
+typedef struct __attribute__((packed)) {
     char magic[8];
     char format[16];
     uint64_t last_update_ms;
@@ -73,8 +73,8 @@ typedef struct {
     uint32_t height;
     uint32_t bytes_per_frame;
     uint32_t frame_counter;
-    uint32_t active;
-    uint32_t reserved;
+    uint8_t active;
+    uint8_t reserved[7];
     uint8_t frame[NORNS_DISPLAY_SHM_BYTES];
 } norns_display_shm_t;
 
@@ -458,7 +458,9 @@ static void pump_screen(norns_instance_t *inst) {
     if (inst->display_shm && (got_frame || inst->screen_valid)) {
         if (got_frame) {
             memcpy(inst->display_shm->frame, inst->screen_buf, NORNS_DISPLAY_SHM_BYTES);
+            __sync_synchronize();  /* barrier before incrementing counter */
             inst->display_shm->frame_counter++;
+            __sync_synchronize();  /* barrier after — reader uses counter for torn-read detection */
         }
         inst->display_shm->last_update_ms = now_ms();
         inst->display_shm->active = 1;
