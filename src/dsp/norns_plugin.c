@@ -159,6 +159,16 @@ typedef struct {
     char shm_audio_in_path[256];
     bool audio_in_enabled;   /* off by default — scripts opt in */
 
+    /* Lock-free MIDI input ring (JACK callback → render_block → FIFO) */
+    uint8_t midi_in_ring[4096];
+    volatile uint32_t midi_in_ring_wr;
+    volatile uint32_t midi_in_ring_rd;
+
+    /* Lock-free MIDI output ring (render_block → JACK callback) */
+    uint8_t midi_out_ring[4096];
+    volatile uint32_t midi_out_ring_wr;
+    volatile uint32_t midi_out_ring_rd;
+
     /* JACK client (replaces FIFO/SHM audio and MIDI transport) */
     jack_client_t *jack_client;
     jack_port_t *jack_audio_in_L;   /* from system:capture_1 */
@@ -878,6 +888,81 @@ static void check_pw_alive(norns_instance_t *inst) {
 
 /* ── JACK Audio/MIDI Client ──────────────────────────── */
 
+/* Drain MIDI input ring (JACK callback → FIFO), called from render_block */
+static void drain_midi_in_ring(norns_instance_t *inst) {
+    if (!inst || inst->fifo_midi_in_fd < 0) return;
+    uint32_t wr = __atomic_load_n(&inst->midi_in_ring_wr, __ATOMIC_ACQUIRE);
+    uint32_t rd = __atomic_load_n(&inst->midi_in_ring_rd, __ATOMIC_RELAXED);
+    while (rd != wr) {
+        uint32_t avail = wr - rd;
+        if (avail < 2) break;
+        uint8_t hdr[2];
+        hdr[0] = inst->midi_in_ring[rd & (sizeof(inst->midi_in_ring) - 1)];
+        hdr[1] = inst->midi_in_ring[(rd + 1) & (sizeof(inst->midi_in_ring) - 1)];
+        uint16_t msg_len = (uint16_t)hdr[0] | ((uint16_t)hdr[1] << 8);
+        if (msg_len == 0 || 2 + msg_len > avail) break;
+        uint8_t frame[258];
+        frame[0] = hdr[0];
+        frame[1] = hdr[1];
+        for (uint16_t j = 0; j < msg_len; j++)
+            frame[2 + j] = inst->midi_in_ring[(rd + 2 + j) & (sizeof(inst->midi_in_ring) - 1)];
+        (void)write(inst->fifo_midi_in_fd, frame, 2 + msg_len);
+        rd += 2 + msg_len;
+    }
+    __atomic_store_n(&inst->midi_in_ring_rd, rd, __ATOMIC_RELEASE);
+}
+
+/* Pump MIDI output FIFO → host + ring buffer, called from render_block */
+static void pump_midi_out_to_ring(norns_instance_t *inst) {
+    if (!inst || inst->fifo_midi_out_fd < 0) return;
+
+    /* Read from FIFO into accumulation buffer */
+    uint8_t tmp[512];
+    while (1) {
+        size_t space = sizeof(inst->midi_out_buf) - inst->midi_out_buf_len;
+        if (space == 0) break;
+        ssize_t n = read(inst->fifo_midi_out_fd, tmp,
+                         space < sizeof(tmp) ? space : sizeof(tmp));
+        if (n <= 0) break;
+        memcpy(inst->midi_out_buf + inst->midi_out_buf_len, tmp, (size_t)n);
+        inst->midi_out_buf_len += (uint16_t)n;
+    }
+
+    /* Parse messages, send to host MIDI, and copy to ring for JACK */
+    size_t pos = 0;
+    while (pos + 2 <= inst->midi_out_buf_len) {
+        uint16_t msg_len = (uint16_t)inst->midi_out_buf[pos]
+                         | ((uint16_t)inst->midi_out_buf[pos + 1] << 8);
+        if (msg_len == 0) { pos += 2; continue; }
+        if (pos + 2 + msg_len > inst->midi_out_buf_len) break;
+
+        /* Send via Schwung host MIDI (for skipback etc.) */
+        if (g_host && g_host->send_midi_internal)
+            g_host->send_midi_internal(inst->midi_out_buf + pos + 2, msg_len);
+
+        /* Copy to lock-free ring for JACK callback */
+        uint32_t total = 2 + msg_len;
+        uint32_t wr = __atomic_load_n(&inst->midi_out_ring_wr, __ATOMIC_RELAXED);
+        uint32_t rd = __atomic_load_n(&inst->midi_out_ring_rd, __ATOMIC_ACQUIRE);
+        uint32_t used = wr - rd;
+        if (used + total <= sizeof(inst->midi_out_ring)) {
+            for (uint32_t j = 0; j < total; j++)
+                inst->midi_out_ring[(wr + j) & (sizeof(inst->midi_out_ring) - 1)] = inst->midi_out_buf[pos + j];
+            __atomic_store_n(&inst->midi_out_ring_wr, wr + total, __ATOMIC_RELEASE);
+        }
+
+        pos += 2 + msg_len;
+    }
+
+    if (pos > 0 && pos < inst->midi_out_buf_len) {
+        memmove(inst->midi_out_buf, inst->midi_out_buf + pos,
+                inst->midi_out_buf_len - pos);
+        inst->midi_out_buf_len -= (uint16_t)pos;
+    } else if (pos >= inst->midi_out_buf_len) {
+        inst->midi_out_buf_len = 0;
+    }
+}
+
 static int jack_process_cb(jack_nframes_t nframes, void *arg) {
     norns_instance_t *inst = (norns_instance_t *)arg;
     if (!inst) return 0;
@@ -914,7 +999,7 @@ static int jack_process_cb(jack_nframes_t nframes, void *arg) {
     }
 
     /* ── Audio input: system capture → SHM ring (for crone) ── */
-    if (inst->audio_in_enabled && inst->jack_audio_in_L &&
+    if (__atomic_load_n(&inst->audio_in_enabled, __ATOMIC_RELAXED) && inst->jack_audio_in_L &&
         inst->jack_audio_in_R && inst->shm_audio_in) {
         jack_default_audio_sample_t *cap_L =
             (jack_default_audio_sample_t *)jack_port_get_buffer(inst->jack_audio_in_L, nframes);
@@ -944,8 +1029,8 @@ static int jack_process_cb(jack_nframes_t nframes, void *arg) {
         }
     }
 
-    /* ── MIDI input: JACK → MIDI input FIFO (for norns-input-bridge) ── */
-    if (inst->jack_midi_in && inst->fifo_midi_in_fd >= 0) {
+    /* ── MIDI input: JACK → lock-free ring (drained by render_block) ── */
+    if (inst->jack_midi_in) {
         void *midi_buf = jack_port_get_buffer(inst->jack_midi_in, nframes);
         if (midi_buf) {
             jack_nframes_t count = jack_midi_get_event_count(midi_buf);
@@ -953,64 +1038,48 @@ static int jack_process_cb(jack_nframes_t nframes, void *arg) {
             for (ev = 0; ev < count; ev++) {
                 jack_midi_event_t event;
                 if (jack_midi_event_get(&event, midi_buf, ev) == 0 &&
-                    event.size > 0 && event.size <= 4096) {
-                    /* 2-byte LE length prefix + raw MIDI bytes */
-                    uint8_t frame[4098];
-                    uint16_t ulen = (uint16_t)event.size;
-                    frame[0] = (uint8_t)(ulen & 0xFF);
-                    frame[1] = (uint8_t)((ulen >> 8) & 0xFF);
-                    memcpy(frame + 2, event.buffer, event.size);
-                    (void)write(inst->fifo_midi_in_fd, frame, 2 + event.size);
+                    event.size > 0 && event.size <= 256) {
+                    /* Write length-prefixed MIDI event to lock-free ring */
+                    uint32_t total = 2 + event.size;
+                    uint32_t wr = __atomic_load_n(&inst->midi_in_ring_wr, __ATOMIC_RELAXED);
+                    uint32_t rd = __atomic_load_n(&inst->midi_in_ring_rd, __ATOMIC_ACQUIRE);
+                    uint32_t used = wr - rd;
+                    if (used + total <= sizeof(inst->midi_in_ring)) {
+                        uint8_t hdr[2] = { (uint8_t)(event.size & 0xFF), (uint8_t)((event.size >> 8) & 0xFF) };
+                        for (uint32_t j = 0; j < 2; j++)
+                            inst->midi_in_ring[(wr + j) & (sizeof(inst->midi_in_ring) - 1)] = hdr[j];
+                        for (uint32_t j = 0; j < event.size; j++)
+                            inst->midi_in_ring[(wr + 2 + j) & (sizeof(inst->midi_in_ring) - 1)] = event.buffer[j];
+                        __atomic_store_n(&inst->midi_in_ring_wr, wr + total, __ATOMIC_RELEASE);
+                    }
                 }
             }
         }
     }
 
-    /* ── MIDI output: matron FIFO → JACK MIDI out + host skipback ── */
-    if (inst->jack_midi_out && inst->fifo_midi_out_fd >= 0) {
+    /* ── MIDI output: drain ring buffer → JACK MIDI ── */
+    {
         void *midi_out_buf = jack_port_get_buffer(inst->jack_midi_out, nframes);
-        jack_midi_clear_buffer(midi_out_buf);
-
-        /* Read from matron's output FIFO (non-blocking) */
-        uint8_t tmp[512];
-        while (1) {
-            size_t space = sizeof(inst->midi_out_buf) - inst->midi_out_buf_len;
-            if (space == 0) break;
-            ssize_t n = read(inst->fifo_midi_out_fd, tmp,
-                             space < sizeof(tmp) ? space : sizeof(tmp));
-            if (n <= 0) break;
-            memcpy(inst->midi_out_buf + inst->midi_out_buf_len, tmp, (size_t)n);
-            inst->midi_out_buf_len += (uint16_t)n;
-        }
-
-        /* Parse length-prefixed messages and send */
-        size_t pos = 0;
-        while (pos + 2 <= inst->midi_out_buf_len) {
-            uint16_t msg_len = (uint16_t)inst->midi_out_buf[pos]
-                             | ((uint16_t)inst->midi_out_buf[pos + 1] << 8);
-            if (msg_len == 0) { pos += 2; continue; }
-            if (pos + 2 + msg_len > inst->midi_out_buf_len) break;
-
-            /* Send via JACK MIDI */
-            jack_midi_data_t *jack_ev =
-                jack_midi_event_reserve(midi_out_buf, 0, msg_len);
-            if (jack_ev)
-                memcpy(jack_ev, inst->midi_out_buf + pos + 2, msg_len);
-
-            /* Also send via host for Schwung skipback */
-            if (g_host && g_host->send_midi_internal)
-                g_host->send_midi_internal(inst->midi_out_buf + pos + 2, msg_len);
-
-            pos += 2 + msg_len;
-        }
-
-        /* Compact remaining bytes */
-        if (pos > 0 && pos < inst->midi_out_buf_len) {
-            memmove(inst->midi_out_buf, inst->midi_out_buf + pos,
-                    inst->midi_out_buf_len - pos);
-            inst->midi_out_buf_len -= (uint16_t)pos;
-        } else if (pos >= inst->midi_out_buf_len) {
-            inst->midi_out_buf_len = 0;
+        if (midi_out_buf) {
+            jack_midi_clear_buffer(midi_out_buf);
+            uint32_t wr = __atomic_load_n(&inst->midi_out_ring_wr, __ATOMIC_ACQUIRE);
+            uint32_t rd = __atomic_load_n(&inst->midi_out_ring_rd, __ATOMIC_RELAXED);
+            while (rd != wr) {
+                uint32_t avail = wr - rd;
+                if (avail < 2) break;
+                uint8_t hdr[2];
+                hdr[0] = inst->midi_out_ring[rd & (sizeof(inst->midi_out_ring) - 1)];
+                hdr[1] = inst->midi_out_ring[(rd + 1) & (sizeof(inst->midi_out_ring) - 1)];
+                uint16_t msg_len = (uint16_t)hdr[0] | ((uint16_t)hdr[1] << 8);
+                if (msg_len == 0 || 2 + msg_len > avail) break;
+                jack_midi_data_t *ev = jack_midi_event_reserve(midi_out_buf, 0, msg_len);
+                if (ev) {
+                    for (uint16_t j = 0; j < msg_len; j++)
+                        ev[j] = inst->midi_out_ring[(rd + 2 + j) & (sizeof(inst->midi_out_ring) - 1)];
+                }
+                rd += 2 + msg_len;
+            }
+            __atomic_store_n(&inst->midi_out_ring_rd, rd, __ATOMIC_RELEASE);
         }
     }
 
@@ -1048,6 +1117,14 @@ static int jack_client_init(norns_instance_t *inst) {
         JACK_DEFAULT_MIDI_TYPE, JackPortIsInput, 0);
     inst->jack_midi_out = jack_port_register(inst->jack_client, "midi_out",
         JACK_DEFAULT_MIDI_TYPE, JackPortIsOutput, 0);
+
+    /* Check all port registrations */
+    if (!inst->jack_audio_out_L) pw_log("JACK port registration failed: audio_from_crone_L");
+    if (!inst->jack_audio_out_R) pw_log("JACK port registration failed: audio_from_crone_R");
+    if (!inst->jack_audio_in_L) pw_log("JACK port registration failed: audio_to_crone_L");
+    if (!inst->jack_audio_in_R) pw_log("JACK port registration failed: audio_to_crone_R");
+    if (!inst->jack_midi_in) pw_log("JACK port registration failed: midi_in");
+    if (!inst->jack_midi_out) pw_log("JACK port registration failed: midi_out");
 
     /* Set process callback and activate */
     jack_set_process_callback(inst->jack_client, jack_process_cb, inst);
@@ -1118,6 +1195,10 @@ static void *v2_create_instance(const char *module_dir, const char *json_default
     inst->jack_midi_in = NULL;
     inst->jack_midi_out = NULL;
     inst->jack_retry_ms = 0;
+    inst->midi_in_ring_wr = 0;
+    inst->midi_in_ring_rd = 0;
+    inst->midi_out_ring_wr = 0;
+    inst->midi_out_ring_rd = 0;
     inst->fifo_midi_in_fd = -1;
     inst->fifo_midi_out_fd = -1;
     inst->midi_out_buf_len = 0;
@@ -1221,10 +1302,10 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
     if (inst->fifo_midi_in_fd < 0) return;
 
     /* Cap at practical size for stack allocation */
-    if (len > 4096) return;
+    if (len > 256) return;
 
     /* 2-byte LE length prefix + raw MIDI bytes */
-    uint8_t frame[4098];
+    uint8_t frame[258];
     uint16_t ulen = (uint16_t)len;
     frame[0] = (uint8_t)(ulen & 0xFF);
     frame[1] = (uint8_t)((ulen >> 8) & 0xFF);
@@ -1392,6 +1473,12 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
             jack_client_init(inst);
         }
     }
+
+    /* Drain MIDI input ring → FIFO (moves FIFO write out of RT thread) */
+    drain_midi_in_ring(inst);
+
+    /* Pump MIDI output FIFO → host + ring (moves FIFO read out of RT thread) */
+    pump_midi_out_to_ring(inst);
 
     /* SHM zero-copy path: JACK callback writes here, we read.
      * No syscalls, no intermediate ring buffer, no FIFO overhead. */
