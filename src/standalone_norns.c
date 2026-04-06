@@ -198,7 +198,9 @@ static void close_display_shm(void) {
     }
     if (g_display_shm_fd >= 0) {
         close(g_display_shm_fd);
-        shm_unlink(NORNS_DISPLAY_SHM_NAME);
+        /* Do NOT shm_unlink — Schwung's display-server holds an fd to
+         * this segment.  Unlinking would orphan its mapping and the next
+         * launch would create a new segment it can't see. */
         g_display_shm_fd = -1;
     }
 }
