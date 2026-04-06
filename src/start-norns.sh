@@ -78,15 +78,24 @@ wait_for() {
     # routing for crone ↔ scsynth.
     RNBO_JACK="/opt/rnbo-jack"
     JACKD_CHROOT="$RNBO_JACK/jackd"
+    # In standalone mode (Move killed), enable JACK realtime scheduling.
+    # In DSP mode, Move's watchdog kills RT processes it didn't start.
+    JACK_RT_FLAG=""
+    CHRT_PREFIX="chrt -o 0"
+    if ! pidof MoveOriginal >/dev/null 2>&1; then
+        JACK_RT_FLAG="-R -P 80"
+        CHRT_PREFIX=""
+        echo "standalone mode — JACK RT scheduling enabled"
+    fi
     if [ -x "$CHROOT/$JACKD_CHROOT" ] && ! chroot "$CHROOT" pgrep -x jackd >/dev/null 2>&1; then
-        chrt -o 0 chroot "$CHROOT" su - move -c "
+        $CHRT_PREFIX chroot "$CHROOT" su - move -c "
             export LD_LIBRARY_PATH=$RNBO_JACK
             export JACK_DRIVER_DIR=$RNBO_JACK/jack
-            nohup $JACKD_CHROOT -d dummy -r 44100 -p 128 >/dev/null 2>&1 &
+            nohup $JACKD_CHROOT $JACK_RT_FLAG -d dummy -r 44100 -p 128 >/dev/null 2>&1 &
             echo \$! > /tmp/norns-pids-${SLOT}/jackd.pid
         "
         sleep 2  # wait for JACK server to initialize
-        echo "jackd started (in-chroot, dummy driver)"
+        echo "jackd started (in-chroot, dummy driver, RT=${JACK_RT_FLAG:-off})"
     elif chroot "$CHROOT" pgrep -x jackd >/dev/null 2>&1; then
         echo "jackd already running"
     else
@@ -228,13 +237,27 @@ s.close()
         "
     fi
 
-    # Renice audio-critical processes to highest non-RT priority.
-    # (SCHED_RR/FIFO gets processes killed by Move's watchdog.)
-    for proc in jackd crone matron sclang scsynth; do
-        for pid in $(chroot "$CHROOT" pgrep -x "$proc" 2>/dev/null); do
-            renice -n -20 -p "$pid" >/dev/null 2>&1
+    if ! pidof MoveOriginal >/dev/null 2>&1; then
+        # Standalone mode: promote audio processes to SCHED_FIFO.
+        # No Move watchdog to worry about.
+        for proc in jackd scsynth crone; do
+            for pid in $(chroot "$CHROOT" pgrep -x "$proc" 2>/dev/null); do
+                chrt -f -p 70 "$pid" 2>/dev/null && echo "RT FIFO set for $proc (pid $pid)"
+            done
         done
-    done
+        for proc in matron sclang; do
+            for pid in $(chroot "$CHROOT" pgrep -x "$proc" 2>/dev/null); do
+                renice -n -20 -p "$pid" >/dev/null 2>&1
+            done
+        done
+    else
+        # DSP mode: renice only (Move's watchdog kills RT processes).
+        for proc in jackd crone matron sclang scsynth; do
+            for pid in $(chroot "$CHROOT" pgrep -x "$proc" 2>/dev/null); do
+                renice -n -20 -p "$pid" >/dev/null 2>&1
+            done
+        done
+    fi
 
     echo "Norns started in chroot (slot $SLOT)"
 ) &
