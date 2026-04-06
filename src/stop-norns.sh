@@ -6,12 +6,12 @@ CHROOT="/data/UserData/pw-chroot"
 PID_DIR="/tmp/norns-pids-${SLOT}"
 
 # Kill by process name (PID files are often stale or missing)
-for proc in maiden norns-input-bridge midi-bridge jack-fifo-bridge matron ws-wrapper crone scsynth sclang wireplumber pipewire; do
+for proc in maiden norns-input-bridge midi-bridge matron ws-wrapper crone scsynth sclang jackd; do
     pkill -f "$proc" 2>/dev/null || true
 done
 sleep 1
 # Force kill survivors
-for proc in jack-fifo-bridge matron crone scsynth sclang pipewire; do
+for proc in matron crone scsynth sclang jackd; do
     pkill -9 -f "$proc" 2>/dev/null || true
 done
 
