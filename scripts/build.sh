@@ -30,6 +30,7 @@ mkdir -p build/module
     -o build/module/dsp.so \
     -Isrc/dsp \
     -lpthread -lm \
+    -Wl,-rpath,/data/UserData/rnbo/lib \
     $(PKG_CONFIG_PATH=${PKG_CONFIG_PATH} pkg-config --cflags --libs jack 2>/dev/null || echo "-ljack")
 
 echo "=== Cross-compiling pw-helper ==="
