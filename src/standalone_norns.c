@@ -117,6 +117,7 @@ static int g_pad_octave = 3;
 static const uint8_t PAD_LED_ROOT = 125;  /* blue for root (C) */
 static const uint8_t PAD_LED_OTHER = 118; /* light grey */
 static int g_spi_led_slot = 0;            /* next SPI MIDI out slot for LEDs */
+static int g_pad_led_phase = 0;           /* rotate pad LEDs across frames */
 
 /* Dither state */
 static int g_dither_mode = 0;             /* 0=off, 1-7=various modes */
@@ -481,7 +482,11 @@ static void write_spi_led(uint8_t note, uint8_t color) {
 }
 
 static void send_pad_leds(void) {
-    for (int i = 0; i < 32; i++) {
+    /* Send 16 pads per frame (two frames to cover all 32) */
+    int start = g_pad_led_phase * 16;
+    int end = start + 16;
+    if (end > 32) end = 32;
+    for (int i = start; i < end; i++) {
         int midi_note = g_pad_octave * 12 + i;
         uint8_t color;
         if (midi_note > 127)
@@ -492,6 +497,7 @@ static void send_pad_leds(void) {
             color = PAD_LED_OTHER;
         write_spi_led(PAD_NOTE_START + i, color);
     }
+    g_pad_led_phase = (g_pad_led_phase + 1) % 2;
 }
 
 static uint8_t grid_brightness_to_color(uint8_t brightness, int quadrant) {
@@ -502,18 +508,23 @@ static uint8_t grid_brightness_to_color(uint8_t brightness, int quadrant) {
 }
 
 static void send_grid_leds(void) {
+    /* Send 16 pads per frame (two frames to cover all 32) */
     int quadrant = g_grid_quad_y * 2 + g_grid_quad_x;
     int col_off = g_grid_quad_x * 8;
     int row_off = g_grid_quad_y * 4;
-    for (int row = 0; row < 4; row++) {
-        for (int col = 0; col < 8; col++) {
-            int gx = col_off + col;
-            int gy = row_off + row;
-            uint8_t brightness = g_grid_leds_valid ? g_grid_leds[gy * 16 + gx] : 0;
-            uint8_t color = grid_brightness_to_color(brightness, quadrant);
-            write_spi_led(PAD_NOTE_START + row * 8 + col, color);
-        }
+    int start = g_pad_led_phase * 16;
+    int end = start + 16;
+    if (end > 32) end = 32;
+    for (int i = start; i < end; i++) {
+        int row = i / 8;
+        int col = i % 8;
+        int gx = col_off + col;
+        int gy = row_off + row;
+        uint8_t brightness = g_grid_leds_valid ? g_grid_leds[gy * 16 + gx] : 0;
+        uint8_t color = grid_brightness_to_color(brightness, quadrant);
+        write_spi_led(PAD_NOTE_START + i, color);
     }
+    g_pad_led_phase = (g_pad_led_phase + 1) % 2;
 }
 
 static void send_grid_key(int gx, int gy, int state) {
@@ -752,18 +763,112 @@ static void pump_screen(void) {
      * SPI display format: 8 vertical bands of 128 columns.
      * Each byte = 8 vertical pixels in one column, bit 0 = top of band.
      * Norns 4-bit format: row-major, two pixels per byte (hi nibble first). */
+
+    /* First, unpack 4-bit to a flat 8-bit buffer for dithering */
+    static uint8_t g_screen_8bit[128 * 64];
+    for (int i = 0; i < 4096; i++) {
+        g_screen_8bit[i * 2]     = (g_screen_4bit[i] >> 4) & 0x0F;
+        g_screen_8bit[i * 2 + 1] = g_screen_4bit[i] & 0x0F;
+    }
+
+    /* Apply dithering based on mode */
+    static uint8_t dithered[128 * 64];
+
+    switch (g_dither_mode) {
+    case 0: /* OFF — simple threshold */
+        for (int i = 0; i < 128 * 64; i++)
+            dithered[i] = g_screen_8bit[i] > g_dither_threshold ? 1 : 0;
+        break;
+    case 1: /* ROW INVERT — alternate row threshold shift */
+        for (int y = 0; y < 64; y++)
+            for (int x = 0; x < 128; x++) {
+                int t = g_dither_threshold + (y & 1 ? 1 : -1);
+                dithered[y * 128 + x] = g_screen_8bit[y * 128 + x] > t ? 1 : 0;
+            }
+        break;
+    case 2: /* WORD INVERT — checkerboard threshold */
+        for (int y = 0; y < 64; y++)
+            for (int x = 0; x < 128; x++) {
+                int t = g_dither_threshold + ((x + y) & 1 ? 1 : -1);
+                dithered[y * 128 + x] = g_screen_8bit[y * 128 + x] > t ? 1 : 0;
+            }
+        break;
+    case 3: { /* FLOYD-STEINBERG */
+        static int16_t err_buf[128 * 64];
+        for (int i = 0; i < 128 * 64; i++)
+            err_buf[i] = (int16_t)g_screen_8bit[i];
+        for (int y = 0; y < 64; y++)
+            for (int x = 0; x < 128; x++) {
+                int idx = y * 128 + x;
+                int old = err_buf[idx];
+                int new_val = old > g_dither_threshold ? 1 : 0;
+                dithered[idx] = new_val;
+                int err = old - (new_val ? 15 : 0);
+                if (x + 1 < 128) err_buf[idx + 1] += err * 7 / 16;
+                if (y + 1 < 64) {
+                    if (x > 0) err_buf[idx + 128 - 1] += err * 3 / 16;
+                    err_buf[idx + 128] += err * 5 / 16;
+                    if (x + 1 < 128) err_buf[idx + 128 + 1] += err * 1 / 16;
+                }
+            }
+        break;
+    }
+    case 4: { /* BAYER 4x4 */
+        static const int bayer4[4][4] = {
+            { 0,  8,  2, 10}, { 12, 4, 14,  6},
+            { 3, 11,  1,  9}, { 15, 7, 13,  5}
+        };
+        for (int y = 0; y < 64; y++)
+            for (int x = 0; x < 128; x++) {
+                int t = bayer4[y & 3][x & 3];
+                dithered[y * 128 + x] = g_screen_8bit[y * 128 + x] > t ? 1 : 0;
+            }
+        break;
+    }
+    case 5: { /* ATKINSON */
+        static int16_t err_buf[128 * 64];
+        for (int i = 0; i < 128 * 64; i++)
+            err_buf[i] = (int16_t)g_screen_8bit[i];
+        for (int y = 0; y < 64; y++)
+            for (int x = 0; x < 128; x++) {
+                int idx = y * 128 + x;
+                int old = err_buf[idx];
+                int new_val = old > g_dither_threshold ? 1 : 0;
+                dithered[idx] = new_val;
+                int err = (old - (new_val ? 15 : 0)) / 8;
+                if (x + 1 < 128) err_buf[idx + 1] += err;
+                if (x + 2 < 128) err_buf[idx + 2] += err;
+                if (y + 1 < 64) {
+                    if (x > 0) err_buf[idx + 128 - 1] += err;
+                    err_buf[idx + 128] += err;
+                    if (x + 1 < 128) err_buf[idx + 128 + 1] += err;
+                }
+                if (y + 2 < 64) err_buf[idx + 256] += err;
+            }
+        break;
+    }
+    case 6: /* CURSOR — higher contrast threshold */
+        for (int i = 0; i < 128 * 64; i++)
+            dithered[i] = g_screen_8bit[i] > (g_dither_threshold / 2) ? 1 : 0;
+        break;
+    case 7: /* HI-CON — binary at midpoint */
+        for (int i = 0; i < 128 * 64; i++)
+            dithered[i] = g_screen_8bit[i] > 7 ? 1 : 0;
+        break;
+    default:
+        for (int i = 0; i < 128 * 64; i++)
+            dithered[i] = g_screen_8bit[i] > g_dither_threshold ? 1 : 0;
+        break;
+    }
+
+    /* Pack into vertical-band 1-bit format */
     memset(g_screen_1bit, 0, 1024);
     for (int band = 0; band < 8; band++) {
         for (int x = 0; x < 128; x++) {
             uint8_t packed = 0;
             int base_y = band * 8;
             for (int j = 0; j < 8; j++) {
-                int y = base_y + j;
-                int px_idx = y * 128 + x;          /* linear pixel index */
-                int byte_idx = px_idx / 2;
-                uint8_t nib = (px_idx & 1) ? (g_screen_4bit[byte_idx] & 0x0F)
-                                           : ((g_screen_4bit[byte_idx] >> 4) & 0x0F);
-                if (nib > g_dither_threshold)
+                if (dithered[(base_y + j) * 128 + x])
                     packed |= (1 << j);
             }
             g_screen_1bit[band * 128 + x] = packed;
