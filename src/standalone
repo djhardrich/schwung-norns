@@ -1,0 +1,23 @@
+#!/bin/sh
+# Norns standalone launcher — kills Move, starts norns binary with logging.
+# Called by Schwung's launch-standalone.sh (runs as root-context).
+
+DIR="$(dirname "$0")"
+LOG=/tmp/norns-standalone.log
+
+# Kill ALL Move-related processes
+/etc/init.d/move stop >/dev/null 2>&1 || true
+sleep 1
+
+for name in MoveOriginal Move MoveLauncher MoveMessageDisplay MoveWebServiceOriginal \
+            schwung shadow_ui link-subscriber display-server \
+            jackd rnbomovecontrol rnbooscquery; do
+    pids=$(pidof $name 2>/dev/null || true)
+    [ -n "$pids" ] && kill -9 $pids 2>/dev/null || true
+done
+
+# Clean up Schwung SHM
+rm -f /dev/shm/schwung-* 2>/dev/null || true
+sleep 1
+
+exec "$DIR/norns_bin" "$@" >> "$LOG" 2>&1
