@@ -11,6 +11,7 @@
   "api_version": 2,
   "raw_midi": true,
   "component_type": "tool",
+  "standalone": true,
   "tool_config": {
     "interactive": true,
     "skip_file_browser": true
