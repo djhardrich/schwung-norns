@@ -596,8 +596,8 @@ static void pump_screen(void) {
 static void push_display_slice(void) {
     if (!g_screen_valid) return;
 
-    /* Write display phase and data to SPI output buffer */
-    *(uint32_t *)(g_spi_buf + SCHWUNG_OFF_OUT_DISP_STAT) = g_disp_phase;
+    /* Write display phase as a single byte (must not bleed into data area) */
+    g_spi_buf[SCHWUNG_OFF_OUT_DISP_STAT] = (uint8_t)g_disp_phase;
 
     if (g_disp_phase > 0) {
         /* Phases 1-6: push pixel data chunks */
@@ -635,10 +635,10 @@ static void process_audio(void) {
         }
     }
 
-    /* SPI audio in -> ring_in (for JACK callback to feed to crone) */
-    if (g_ring_in) {
-        shm_write(g_ring_in, spi_in, SCHWUNG_AUDIO_FRAMES);
-    }
+    /* SPI audio in is NOT forwarded to crone — doing so would create a
+     * hardware feedback loop (mic -> crone -> speaker -> mic).
+     * Audio input for norns scripts comes via JACK directly. */
+    (void)spi_in;
 }
 
 /* ── Main ── */
