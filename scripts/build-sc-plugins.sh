@@ -28,8 +28,12 @@ setup_sc_headers() {
     SC_VERSION=$(dpkg-query -W -f='${Version}' supercollider-server 2>/dev/null \
         | sed 's/^[0-9]*://' | sed 's/+.*//' | sed 's/-.*//' | sed 's/~.*//')
     if [ -z "$SC_VERSION" ]; then
-        echo "ERROR: Cannot determine SuperCollider version from apt" >&2
-        exit 1
+        # Package not found — try scsynth binary version
+        SC_VERSION=$(scsynth -v 2>&1 | grep -oP '\d+\.\d+\.\d+' | head -1 || echo "")
+    fi
+    if [ -z "$SC_VERSION" ]; then
+        SC_VERSION="3.13.0"
+        echo "  Could not detect SC version, using fallback: $SC_VERSION"
     fi
     echo "Installed SuperCollider version: $SC_VERSION"
 
@@ -42,7 +46,13 @@ setup_sc_headers() {
             # Some versions use tag format without "Version-" prefix
             echo "  Tag 'Version-$SC_VERSION' not found, trying '$SC_VERSION'"
             git clone --depth 1 --branch "$SC_VERSION" \
-                https://github.com/supercollider/supercollider.git "$SC_SRC"
+                https://github.com/supercollider/supercollider.git "$SC_SRC" \
+                2>/dev/null || {
+                # Last resort: use latest release
+                echo "  Tag '$SC_VERSION' not found either, using Version-3.13.0"
+                git clone --depth 1 --branch "Version-3.13.0" \
+                    https://github.com/supercollider/supercollider.git "$SC_SRC"
+            }
         }
     fi
 }
