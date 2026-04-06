@@ -61,7 +61,17 @@ typedef struct __attribute__((packed)) {
 
 #define MIDI_CC      0xB0
 #define MIDI_NOTE_ON 0x90
+#define MIDI_NOTE_OFF 0x80
 #define CC_BACK      51
+#define CC_MUTE      88
+#define CC_ENC_6     76
+#define CC_ENC_7     77
+#define CC_UP        55
+#define CC_DOWN      54
+#define CC_RIGHT     63
+#define CC_LEFT      62
+#define PAD_NOTE_START 68
+#define PAD_NOTE_END   99
 
 /* ── Globals ── */
 
@@ -95,6 +105,30 @@ static int g_fifo_midi_to_chroot = -1;     /* /tmp/midi-to-chroot-SLOT */
 static int g_fifo_midi_from_chroot = -1;   /* /tmp/midi-from-chroot-SLOT */
 static int g_fifo_screen = -1;             /* /tmp/norns-screen-SLOT */
 static int g_fifo_input = -1;              /* /tmp/norns-input-SLOT */
+static int g_fifo_grid = -1;              /* /tmp/norns-grid-SLOT */
+
+/* Grid emulator state */
+static bool g_grid_mode = false;
+static int g_grid_quad_x = 0;             /* 0=left (cols 0-7), 1=right (cols 8-15) */
+static int g_grid_quad_y = 0;             /* 0=bottom (rows 0-3), 1=top (rows 4-7) */
+static uint8_t g_grid_leds[128];          /* 16x8 brightness from norns */
+static int g_grid_leds_valid = 0;
+static int g_pad_octave = 3;
+static const uint8_t PAD_LED_ROOT = 125;  /* blue for root (C) */
+static const uint8_t PAD_LED_OTHER = 118; /* light grey */
+static int g_spi_led_slot = 0;            /* next SPI MIDI out slot for LEDs */
+
+/* Dither state */
+static int g_dither_mode = 0;             /* 0=off, 1-7=various modes */
+static int g_dither_threshold = 3;        /* brightness cutoff 0-15 */
+
+/* Grid quadrant colors: [off, dim, med, bright] */
+static const uint8_t GRID_COLORS[4][4] = {
+    {0, 45, 46, 125},   /* Q1 (BL): blue */
+    {0, 17, 18,   8},   /* Q2 (BR): green */
+    {0,  1,  2, 127},   /* Q3 (TL): red */
+    {0, 81, 82, 120},   /* Q4 (TR): purple/white */
+};
 
 /* Screen state */
 static uint8_t g_screen_4bit[4096];        /* 4-bit packed from matron */
@@ -421,6 +455,7 @@ static void open_fifos(void) {
     /* Grid LED FIFO */
     snprintf(path, sizeof(path), "/tmp/norns-grid-%d", SLOT);
     mkfifo(path, 0666); chmod(path, 0666);
+    g_fifo_grid = open(path, O_RDWR | O_NONBLOCK);
 
     log_msg("FIFOs created");
 }
@@ -430,12 +465,91 @@ static void close_fifos(void) {
     if (g_fifo_midi_from_chroot >= 0) close(g_fifo_midi_from_chroot);
     if (g_fifo_screen >= 0) close(g_fifo_screen);
     if (g_fifo_input >= 0) close(g_fifo_input);
+    if (g_fifo_grid >= 0) close(g_fifo_grid);
+}
+
+/* ── SPI LED Helpers ── */
+
+static void write_spi_led(uint8_t note, uint8_t color) {
+    if (g_spi_led_slot >= SCHWUNG_MIDI_OUT_MAX) return;
+    uint8_t *out = g_spi_buf + SCHWUNG_OFF_OUT_MIDI + g_spi_led_slot * 4;
+    out[0] = 0x09;  /* CIN=note_on, cable=0 */
+    out[1] = 0x90;  /* Note On, channel 0 */
+    out[2] = note;
+    out[3] = color;
+    g_spi_led_slot++;
+}
+
+static void send_pad_leds(void) {
+    for (int i = 0; i < 32; i++) {
+        int midi_note = g_pad_octave * 12 + i;
+        uint8_t color;
+        if (midi_note > 127)
+            color = 0;
+        else if (midi_note % 12 == 0)
+            color = PAD_LED_ROOT;
+        else
+            color = PAD_LED_OTHER;
+        write_spi_led(PAD_NOTE_START + i, color);
+    }
+}
+
+static uint8_t grid_brightness_to_color(uint8_t brightness, int quadrant) {
+    if (brightness == 0)   return GRID_COLORS[quadrant][0];
+    if (brightness <= 4)   return GRID_COLORS[quadrant][1];
+    if (brightness <= 10)  return GRID_COLORS[quadrant][2];
+    return GRID_COLORS[quadrant][3];
+}
+
+static void send_grid_leds(void) {
+    int quadrant = g_grid_quad_y * 2 + g_grid_quad_x;
+    int col_off = g_grid_quad_x * 8;
+    int row_off = g_grid_quad_y * 4;
+    for (int row = 0; row < 4; row++) {
+        for (int col = 0; col < 8; col++) {
+            int gx = col_off + col;
+            int gy = row_off + row;
+            uint8_t brightness = g_grid_leds_valid ? g_grid_leds[gy * 16 + gx] : 0;
+            uint8_t color = grid_brightness_to_color(brightness, quadrant);
+            write_spi_led(PAD_NOTE_START + row * 8 + col, color);
+        }
+    }
+}
+
+static void send_grid_key(int gx, int gy, int state) {
+    /* Send grid key event via MIDI FIFO as 0xF9 marker.
+     * norns-input-bridge detects this and emits type 3 input frames. */
+    if (g_fifo_midi_to_chroot < 0) return;
+    uint8_t msg[4] = { 0xF9, (uint8_t)gx, (uint8_t)gy, (uint8_t)state };
+    uint8_t frame[6];
+    uint16_t ulen = 4;
+    frame[0] = (uint8_t)(ulen & 0xFF);
+    frame[1] = (uint8_t)((ulen >> 8) & 0xFF);
+    memcpy(frame + 2, msg, 4);
+    write(g_fifo_midi_to_chroot, frame, 6);
+}
+
+/* ── Grid LED FIFO reader ── */
+
+static void pump_grid_leds(void) {
+    if (g_fifo_grid < 0) return;
+    uint8_t tmp[128];
+    int got_frame = 0;
+    for (;;) {
+        ssize_t n = read(g_fifo_grid, tmp, 128);
+        if (n == 128) {
+            memcpy(g_grid_leds, tmp, 128);
+            got_frame = 1;
+        } else {
+            break;
+        }
+    }
+    if (got_frame) g_grid_leds_valid = 1;
 }
 
 /* ── SPI MIDI Processing ── */
 
 static void process_spi_midi_in(void) {
-    /* Read MIDI events from SPI input region, forward to norns input FIFO */
     SchwungMidiEvent *events = (SchwungMidiEvent *)(g_spi_buf + SCHWUNG_OFF_IN_MIDI);
 
     for (int i = 0; i < SCHWUNG_MIDI_IN_MAX; i++) {
@@ -443,20 +557,92 @@ static void process_spi_midi_in(void) {
         if (msg.type == 0 && msg.data1 == 0 && msg.data2 == 0) continue;
 
         uint8_t status_byte = (msg.type << 4) | msg.channel;
+        uint8_t type_nibble = status_byte & 0xF0;
 
-        /* Check for Back button (CC 51 value 127) -> exit */
-        if (status_byte == MIDI_CC && msg.data1 == CC_BACK && msg.data2 == 127) {
+        /* Back button (CC 51 value 127) -> exit */
+        if (type_nibble == MIDI_CC && msg.data1 == CC_BACK && msg.data2 == 127) {
             g_running = 0;
             return;
         }
 
-        /* Forward to norns input FIFO as length-prefixed MIDI */
+        /* Mute button (CC 88) -> toggle grid mode */
+        if (type_nibble == MIDI_CC && msg.data1 == CC_MUTE && msg.data2 > 0) {
+            g_grid_mode = !g_grid_mode;
+            continue;
+        }
+
+        /* Knob 6 (CC 76) -> dither threshold */
+        if (type_nibble == MIDI_CC && msg.data1 == CC_ENC_6) {
+            int delta = 0;
+            if (msg.data2 >= 1 && msg.data2 <= 63) delta = 1;
+            else if (msg.data2 >= 65) delta = -1;
+            if (delta) {
+                g_dither_threshold += delta;
+                if (g_dither_threshold < 0) g_dither_threshold = 0;
+                if (g_dither_threshold > 15) g_dither_threshold = 15;
+            }
+            continue;
+        }
+
+        /* Knob 7 (CC 77) -> dither mode */
+        if (type_nibble == MIDI_CC && msg.data1 == CC_ENC_7) {
+            int delta = 0;
+            if (msg.data2 >= 1 && msg.data2 <= 63) delta = 1;
+            else if (msg.data2 >= 65) delta = -1;
+            if (delta) {
+                g_dither_mode = (g_dither_mode + delta + 8) % 8;
+            }
+            continue;
+        }
+
+        /* Arrow keys: grid quadrant nav or pad octave */
+        if (type_nibble == MIDI_CC && msg.data2 > 0) {
+            if (msg.data1 == CC_UP) {
+                if (g_grid_mode) g_grid_quad_y = 1;
+                else if (g_pad_octave < 8) g_pad_octave++;
+                continue;
+            }
+            if (msg.data1 == CC_DOWN) {
+                if (g_grid_mode) g_grid_quad_y = 0;
+                else if (g_pad_octave > 0) g_pad_octave--;
+                continue;
+            }
+            if (msg.data1 == CC_RIGHT) {
+                if (g_grid_mode) g_grid_quad_x = 1;
+                continue;
+            }
+            if (msg.data1 == CC_LEFT) {
+                if (g_grid_mode) g_grid_quad_x = 0;
+                continue;
+            }
+        }
+
+        /* Pad notes: grid key events or chromatic MIDI */
+        if ((type_nibble == MIDI_NOTE_ON || type_nibble == MIDI_NOTE_OFF) &&
+            msg.data1 >= PAD_NOTE_START && msg.data1 <= PAD_NOTE_END) {
+            int pad_idx = msg.data1 - PAD_NOTE_START;
+            int pad_row = pad_idx / 8;
+            int pad_col = pad_idx % 8;
+            int pressed = (type_nibble == MIDI_NOTE_ON && msg.data2 > 0);
+
+            if (g_grid_mode) {
+                int gx = g_grid_quad_x * 8 + pad_col;
+                int gy = g_grid_quad_y * 4 + pad_row;
+                send_grid_key(gx, gy, pressed ? 1 : 0);
+                continue;  /* don't forward pad to norns MIDI */
+            } else {
+                /* Remap pad note to chromatic */
+                int midi_note = g_pad_octave * 12 + pad_idx;
+                if (midi_note > 127) continue;
+                msg.data1 = (uint8_t)midi_note;
+            }
+        }
+
+        /* Forward to norns MIDI FIFO */
         if (g_fifo_midi_to_chroot >= 0) {
             uint8_t frame[5];
             int len = 3;
-            /* Program change and channel pressure are 2 bytes */
-            if ((status_byte & 0xF0) == 0xC0 || (status_byte & 0xF0) == 0xD0)
-                len = 2;
+            if (type_nibble == 0xC0 || type_nibble == 0xD0) len = 2;
             uint16_t ulen = (uint16_t)len;
             frame[0] = (uint8_t)(ulen & 0xFF);
             frame[1] = (uint8_t)((ulen >> 8) & 0xFF);
@@ -469,15 +655,12 @@ static void process_spi_midi_in(void) {
 }
 
 static void process_midi_out_to_spi(void) {
-    /* Read from norns MIDI output FIFO, write to both SPI (pad LEDs) and
-     * JACK MIDI ring (external devices).  Must be the sole FIFO reader. */
+    /* Read from norns MIDI output FIFO, write to both SPI and
+     * JACK MIDI ring.  Must be the sole FIFO reader. */
     if (g_fifo_midi_from_chroot < 0) return;
 
-    SchwungUsbMidiMsg *out_slots = (SchwungUsbMidiMsg *)(g_spi_buf + SCHWUNG_OFF_OUT_MIDI);
-    int slot_idx = 0;
-
     uint8_t hdr[2];
-    while (slot_idx < SCHWUNG_MIDI_OUT_MAX) {
+    while (g_spi_led_slot < SCHWUNG_MIDI_OUT_MAX) {
         ssize_t n = read(g_fifo_midi_from_chroot, hdr, 2);
         if (n != 2) break;
         uint16_t len = hdr[0] | ((uint16_t)hdr[1] << 8);
@@ -486,17 +669,14 @@ static void process_midi_out_to_spi(void) {
         n = read(g_fifo_midi_from_chroot, msg, len);
         if (n != (ssize_t)len) break;
 
-        /* Write to SPI output for pad LEDs */
-        SchwungMidiMsg midi_msg;
-        midi_msg.type = (msg[0] >> 4) & 0x0F;
-        midi_msg.channel = msg[0] & 0x0F;
-        midi_msg.data1 = (len > 1) ? msg[1] : 0;
-        midi_msg.data2 = (len > 2) ? msg[2] : 0;
-
-        out_slots[slot_idx].cin = midi_msg.type;
-        out_slots[slot_idx].cable = 0;
-        out_slots[slot_idx].midi = midi_msg;
-        slot_idx++;
+        /* Write to SPI output as raw 4-byte USB MIDI packet */
+        uint8_t cin = (msg[0] >> 4) & 0x0F;
+        uint8_t *out = g_spi_buf + SCHWUNG_OFF_OUT_MIDI + g_spi_led_slot * 4;
+        out[0] = cin;       /* CIN | cable=0 */
+        out[1] = msg[0];    /* status */
+        out[2] = (len > 1) ? msg[1] : 0;
+        out[3] = (len > 2) ? msg[2] : 0;
+        g_spi_led_slot++;
 
         /* Also enqueue to JACK MIDI ring for external routing */
         uint32_t wr = __atomic_load_n(&g_midi_out_wr, __ATOMIC_RELAXED);
@@ -583,7 +763,7 @@ static void pump_screen(void) {
                 int byte_idx = px_idx / 2;
                 uint8_t nib = (px_idx & 1) ? (g_screen_4bit[byte_idx] & 0x0F)
                                            : ((g_screen_4bit[byte_idx] >> 4) & 0x0F);
-                if (nib > 3)
+                if (nib > g_dither_threshold)
                     packed |= (1 << j);
             }
             g_screen_1bit[band * 128 + x] = packed;
@@ -704,7 +884,10 @@ int main(int argc, char *argv[]) {
         /* Process audio */
         process_audio();
 
-        /* Process MIDI: SPI -> norns */
+        /* Reset SPI LED slot counter (LEDs share MIDI out region) */
+        g_spi_led_slot = 0;
+
+        /* Process MIDI: SPI -> norns (handles grid mode, dither, etc.) */
         process_spi_midi_in();
 
         /* Drain JACK MIDI ring -> norns FIFO */
@@ -712,6 +895,13 @@ int main(int argc, char *argv[]) {
 
         /* Process MIDI: norns -> SPI + JACK ring */
         process_midi_out_to_spi();
+
+        /* Grid LED updates: read from norns, send pad colors */
+        pump_grid_leds();
+        if (g_grid_mode)
+            send_grid_leds();
+        else
+            send_pad_leds();
 
         /* Process display */
         pump_screen();

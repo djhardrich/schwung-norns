@@ -25,6 +25,7 @@
 // Buffer layout -- input (XMOS -> host)
 #define SCHWUNG_OFF_IN_BASE        2048
 #define SCHWUNG_OFF_IN_MIDI        (SCHWUNG_OFF_IN_BASE)
+#define SCHWUNG_OFF_IN_DISP_STAT   (SCHWUNG_OFF_IN_BASE + 248)
 #define SCHWUNG_OFF_IN_AUDIO       (SCHWUNG_OFF_IN_BASE + 256)
 
 // MIDI limits
