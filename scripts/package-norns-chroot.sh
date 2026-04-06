@@ -31,8 +31,16 @@ for fs in proc sys dev dev/pts tmp; do
     esac
 done
 
-# Ensure git safe.directory is set (must happen before any git commands)
-chroot "$CHROOT" su - move -c 'git config --global --add safe.directory /home/we/norns' 2>/dev/null || true
+# Ensure git safe.directory is set (write directly — git config itself can
+# fail with "not a git repository" due to directory ownership checks)
+mkdir -p "$CHROOT/home/we/.config/git"
+if ! grep -q '/home/we/norns' "$CHROOT/home/we/.config/git/config" 2>/dev/null; then
+    cat >> "$CHROOT/home/we/.config/git/config" << 'GITEOF'
+[safe]
+	directory = /home/we/norns
+GITEOF
+fi
+chown -R 1000:1000 "$CHROOT/home/we/.config/git"
 
 # Step 1: Reset norns source to upstream
 echo ""
