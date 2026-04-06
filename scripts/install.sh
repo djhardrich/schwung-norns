@@ -34,7 +34,7 @@ fi
 echo "--- Deploying module to $REMOTE_MODULE ---"
 ssh "root@$DEVICE_HOST" "mkdir -p $REMOTE_MODULE"
 scp -r "$DIST_DIR/"* "root@$DEVICE_HOST:$REMOTE_MODULE/"
-ssh "root@$DEVICE_HOST" "chmod +x $REMOTE_MODULE/norns $REMOTE_MODULE/start-norns.sh $REMOTE_MODULE/stop-norns.sh $REMOTE_MODULE/restart-norns.sh && chown -R ableton:users $REMOTE_MODULE"
+ssh "root@$DEVICE_HOST" "chmod +x $REMOTE_MODULE/start-norns.sh $REMOTE_MODULE/stop-norns.sh $REMOTE_MODULE/restart-norns.sh && chown -R ableton:users $REMOTE_MODULE"
 
 # ── Install pw-helper (setuid root) ──
 PW_HELPER="$REPO_ROOT/build/pw-helper"

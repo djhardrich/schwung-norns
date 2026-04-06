@@ -58,7 +58,7 @@ wait_for() {
 (
     set +e  # Individual failures handled gracefully — don't exit subshell
     # Start dbus system bus (skip if already running)
-    chroot "$CHROOT" sh -c "
+    chrt -o 0 chroot "$CHROOT" sh -c "
         if ! pgrep -x dbus-daemon >/dev/null 2>&1; then
             mkdir -p /run/dbus
             dbus-daemon --system --fork 2>/dev/null || true
@@ -73,20 +73,20 @@ wait_for() {
     # Start RNBO jackd inside the chroot as the 'move' user.
     # Must run in-chroot so JACK clients (crone, scsynth) share the same
     # libjack/BDB version and can reach the server's Unix socket.
-    # Uses dummy driver — the standalone binary handles SPI audio.
-    # RT scheduling is safe: Move firmware is killed in standalone mode,
-    # so there's no watchdog to terminate SCHED_FIFO processes.
+    # Uses dummy driver — actual audio I/O is via SHM rings between the
+    # DSP plugin (host) and crone (chroot).  JACK only provides inter-process
+    # routing for crone ↔ scsynth.
     RNBO_JACK="/opt/rnbo-jack"
     JACKD_CHROOT="$RNBO_JACK/jackd"
     if [ -x "$CHROOT/$JACKD_CHROOT" ] && ! chroot "$CHROOT" pgrep -x jackd >/dev/null 2>&1; then
-        chroot "$CHROOT" su - move -c "
+        chrt -o 0 chroot "$CHROOT" su - move -c "
             export LD_LIBRARY_PATH=$RNBO_JACK
             export JACK_DRIVER_DIR=$RNBO_JACK/jack
-            nohup $JACKD_CHROOT -R -d dummy -r 44100 -p 128 >/dev/null 2>&1 &
+            nohup $JACKD_CHROOT -d dummy -r 44100 -p 128 >/dev/null 2>&1 &
             echo \$! > /tmp/norns-pids-${SLOT}/jackd.pid
         "
         sleep 2  # wait for JACK server to initialize
-        echo "jackd started (in-chroot, dummy driver, RT enabled)"
+        echo "jackd started (in-chroot, dummy driver)"
     elif chroot "$CHROOT" pgrep -x jackd >/dev/null 2>&1; then
         echo "jackd already running"
     else
@@ -107,7 +107,7 @@ wait_for() {
 
     # Start crone (JACK audio routing — must start before sclang)
     if [ -x "$CHROOT/home/we/norns/build/crone/crone" ]; then
-        chroot "$CHROOT" su - move -c "
+        chrt -o 0 chroot "$CHROOT" su - move -c "
             $JACK_ENV
             cd /home/we/norns
             nohup ./build/crone/crone >/dev/null 2>&1 &
@@ -122,7 +122,7 @@ wait_for() {
     # isn't running yet, those UDP packets are lost and matron ends up with
     # an empty engine list → "error: missing ENGINE_NAME" on every script.
     if [ -x "$CHROOT/home/we/norns/build/matron/matron" ]; then
-        chroot "$CHROOT" su - move -c "
+        chrt -o 0 chroot "$CHROOT" su - move -c "
             $JACK_ENV
             export NORNS_SCREEN_FIFO=/tmp/norns-screen-${SLOT}
             export NORNS_INPUT_FIFO=/tmp/norns-input-${SLOT}
@@ -136,7 +136,7 @@ wait_for() {
     # Start sclang via ws-wrapper (boots scsynth, loads Crone.sc, exposes SC REPL on port 5556)
     # sclang manages scsynth's lifecycle and the norns engine system
     if chroot "$CHROOT" which sclang >/dev/null 2>&1; then
-        chroot "$CHROOT" su - move -c "
+        chrt -o 0 chroot "$CHROOT" su - move -c "
             $JACK_ENV
             export QT_QPA_PLATFORM=offscreen
             cd /home/we/norns
@@ -160,7 +160,7 @@ wait_for() {
         sleep 8  # Let crone finish CroneDefs + AudioContext init
     elif chroot "$CHROOT" which scsynth >/dev/null 2>&1; then
         echo "WARN: sclang not found, starting scsynth directly (no engines)"
-        chroot "$CHROOT" su - move -c "
+        chrt -o 0 chroot "$CHROOT" su - move -c "
             $JACK_ENV
             nohup scsynth -u 57110 -a 128 -i 2 -o 2 -r 44100 -z 128 -Z 128 >/dev/null 2>&1 &
             echo \$! > /tmp/norns-pids-${SLOT}/scsynth.pid
@@ -202,7 +202,7 @@ s.close()
     INPUT_FIFO="/tmp/norns-input-${SLOT}"
     MIDI_IN_FIFO="/tmp/midi-to-chroot-${SLOT}"
     if [ -e "$INPUT_FIFO" ]; then
-        chroot "$CHROOT" su - move -c "
+        chrt -o 0 chroot "$CHROOT" su - move -c "
             $JACK_ENV
             nohup /usr/local/bin/norns-input-bridge $INPUT_FIFO $MIDI_IN_FIFO >/dev/null 2>&1 &
             echo \$! > /tmp/norns-pids-${SLOT}/norns-input-bridge.pid
@@ -212,7 +212,7 @@ s.close()
     # Start midi-bridge (if available)
     MIDI_OUT_FIFO="/tmp/midi-from-chroot-${SLOT}"
     if [ -e "$MIDI_IN_FIFO" ] && [ -e "$MIDI_OUT_FIFO" ] && [ -x "$CHROOT/usr/local/bin/midi-bridge" ]; then
-        chroot "$CHROOT" su - move -c "
+        chrt -o 0 chroot "$CHROOT" su - move -c "
             $JACK_ENV
             nohup /usr/local/bin/midi-bridge $MIDI_IN_FIFO $MIDI_OUT_FIFO >/dev/null 2>&1 &
             echo \$! > /tmp/norns-pids-${SLOT}/midi-bridge.pid
@@ -221,7 +221,7 @@ s.close()
 
     # Start Maiden
     if [ -x "$CHROOT/home/we/maiden/maiden" ]; then
-        chroot "$CHROOT" su - move -c "
+        chrt -o 0 chroot "$CHROOT" su - move -c "
             cd /home/we/maiden
             nohup ./maiden server --port 5000 --data /home/we/dust --app /home/we/maiden/app/build --doc /home/we/norns/doc >/dev/null 2>&1 &
             echo \$! > /tmp/norns-pids-${SLOT}/maiden.pid

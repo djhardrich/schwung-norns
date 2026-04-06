@@ -359,7 +359,29 @@ static void spi_close(void) {
 
 /* ── Chroot Lifecycle ── */
 
+static void ensure_move_dead(void) {
+    /* Move's watchdog kills RT threads.  Make absolutely sure Move/MoveOriginal/
+     * MoveLauncher are gone before starting norns with RT JACK. */
+    const char *targets[] = {
+        "MoveOriginal", "Move", "MoveLauncher", "MoveMessageDisplay",
+        "shadow_ui", "link-subscriber", NULL
+    };
+    for (int round = 0; round < 2; round++) {
+        for (const char **t = targets; *t; t++) {
+            char cmd[128];
+            snprintf(cmd, sizeof(cmd), "pkill %s%s 2>/dev/null",
+                     round ? "-9 " : "", *t);
+            system(cmd);
+        }
+        if (round == 0) usleep(500000);  /* 500ms between SIGTERM and SIGKILL */
+    }
+    usleep(200000);
+    log_msg("Move processes killed");
+}
+
 static void start_chroot(void) {
+    ensure_move_dead();
+
     pid_t pid = fork();
     if (pid == 0) {
         setsid();
