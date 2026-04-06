@@ -659,18 +659,28 @@ if ! grep -q '#include <string>' crone/src/BufDiskWorker.h 2>/dev/null; then
 fi
 
 # ── 9. Upgrade waf for Python 3.12+ compatibility ──
-# waf 2.0.14 uses the 'imp' module removed in Python 3.12
-WAF_VERSION=$(python3 waf --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' || echo "0.0.0")
-case "$WAF_VERSION" in
-    2.0.*)
-        echo "  Upgrading waf from $WAF_VERSION to 2.1.5 (Python 3.12+ compat)"
-        curl -fsSL https://waf.io/waf-2.1.5 -o waf
-        chmod +x waf
-        ;;
-    *)
-        echo "  waf $WAF_VERSION — no upgrade needed"
-        ;;
-esac
+# waf 2.0.14 uses the 'imp' module removed in Python 3.12.
+# python3 waf --version itself crashes on 3.12+, so also check if waf
+# contains 'import imp' as a fallback detection method.
+WAF_NEEDS_UPGRADE=0
+WAF_VERSION=$(python3 waf --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' || echo "")
+if [ -z "$WAF_VERSION" ]; then
+    # waf --version crashed (likely imp error) — check file contents
+    if grep -q 'import imp' waf 2>/dev/null; then
+        WAF_NEEDS_UPGRADE=1
+        echo "  waf crashed on --version (Python 3.12+ imp removal detected)"
+    fi
+elif echo "$WAF_VERSION" | grep -q '^2\.0\.'; then
+    WAF_NEEDS_UPGRADE=1
+    echo "  waf $WAF_VERSION detected"
+else
+    echo "  waf $WAF_VERSION — no upgrade needed"
+fi
+if [ "$WAF_NEEDS_UPGRADE" = "1" ]; then
+    echo "  Upgrading waf to 2.1.5 (Python 3.12+ compat)"
+    curl -fsSL https://waf.io/waf-2.1.5 -o waf
+    chmod +x waf
+fi
 
 # ── 10. Create Move-specific matronrc.lua ──
 echo "  Creating Move-specific matronrc.lua"
