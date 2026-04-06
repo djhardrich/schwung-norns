@@ -1,25 +1,25 @@
 /*
- * norns_plugin.c — Schwung DSP plugin for Norns FIFO bridge
- *                  with bidirectional MIDI FIFO bridge and screen FIFO
+ * norns_plugin.c — Schwung DSP plugin for Norns with JACK audio/MIDI
  *
  * Audio path:
- *   PipeWire sink → /tmp/pw-to-move-<slot> (FIFO) → ring buffer → render_block()
+ *   JACK client registers ports, connects to crone:output_1/2 and
+ *   system:capture_1/2.  The JACK process callback converts F32 audio
+ *   to S16LE and writes into SHM rings that render_block() reads.
  *
  * MIDI path (Move → chroot):
  *   on_midi() → /tmp/midi-to-chroot-<slot> (FIFO, length-prefixed frames)
  *
  * MIDI path (chroot → Move):
- *   /tmp/midi-from-chroot-<slot> (FIFO) → pump_midi_out() → host->send_midi_internal()
+ *   matron → /tmp/midi-from-chroot-<slot> (FIFO) → JACK callback reads
+ *   and forwards via JACK MIDI out + host->send_midi_internal()
  *
  * Screen path (norns matron → plugin):
  *   matron → /tmp/norns-screen-<slot> (FIFO, 1024-byte frames) → screen_buf
  *   get_param("screen_data") → hex-encoded framebuffer string
  *
- * The plugin runs as user 'ableton'. PipeWire chroot requires root, so
+ * The plugin runs as user 'ableton'. The chroot requires root, so
  * start/stop scripts are invoked via the setuid pw-helper-norns binary.
  * Move has no sudo — the setuid helper bridges ableton→root.
- *
- * Based on the proven airplay_plugin.c FIFO bridge pattern.
  */
 
 #define _GNU_SOURCE
@@ -38,6 +38,8 @@
 #include <time.h>
 #include <stdbool.h>
 #include <sys/mman.h>
+#include <jack/jack.h>
+#include <jack/midiport.h>
 
 #include "../shm_audio.h"
 
@@ -168,6 +170,16 @@ typedef struct {
     shm_audio_t *shm_audio_in;
     char shm_audio_in_path[256];
     bool audio_in_enabled;   /* off by default — scripts opt in */
+
+    /* JACK client (replaces FIFO/SHM audio and MIDI transport) */
+    jack_client_t *jack_client;
+    jack_port_t *jack_audio_in_L;   /* from system:capture_1 */
+    jack_port_t *jack_audio_in_R;   /* from system:capture_2 */
+    jack_port_t *jack_audio_out_L;  /* from crone:output_1 */
+    jack_port_t *jack_audio_out_R;  /* from crone:output_2 */
+    jack_port_t *jack_midi_in;      /* from system:midi_capture */
+    jack_port_t *jack_midi_out;     /* to system:midi_playback */
+    uint64_t jack_retry_ms;         /* throttle connection attempts */
 } norns_instance_t;
 
 static int g_instance_counter = 0;
