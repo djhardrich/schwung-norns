@@ -579,30 +579,43 @@ static void pump_screen(void) {
         g_display_shm->active = 1;
     }
 
-    /* Convert 4-bit grayscale -> 1-bit monochrome for SPI display */
+    /* Convert 4-bit grayscale -> 1-bit monochrome for SPI display.
+     * SPI display format: 8 vertical bands of 128 columns.
+     * Each byte = 8 vertical pixels in one column, bit 0 = top of band.
+     * Norns 4-bit format: row-major, two pixels per byte (hi nibble first). */
     memset(g_screen_1bit, 0, 1024);
-    for (int i = 0; i < 4096; i++) {
-        uint8_t hi = (g_screen_4bit[i] >> 4) & 0x0F;
-        uint8_t lo = g_screen_4bit[i] & 0x0F;
-        int px = i * 2;
-        /* Pack into 1-bit: MSB = leftmost pixel in byte */
-        int byte_idx = px / 8;
-        int bit_idx = 7 - (px % 8);
-        if (hi > 3) g_screen_1bit[byte_idx] |= (1 << bit_idx);
-        if (lo > 3) g_screen_1bit[byte_idx] |= (1 << (bit_idx - 1));
+    for (int band = 0; band < 8; band++) {
+        for (int x = 0; x < 128; x++) {
+            uint8_t packed = 0;
+            int base_y = band * 8;
+            for (int j = 0; j < 8; j++) {
+                int y = base_y + j;
+                int px_idx = y * 128 + x;          /* linear pixel index */
+                int byte_idx = px_idx / 2;
+                uint8_t nib = (px_idx & 1) ? (g_screen_4bit[byte_idx] & 0x0F)
+                                           : ((g_screen_4bit[byte_idx] >> 4) & 0x0F);
+                if (nib > 3)
+                    packed |= (1 << j);
+            }
+            g_screen_1bit[band * 128 + x] = packed;
+        }
     }
 }
 
 static void push_display_slice(void) {
     if (!g_screen_valid) return;
 
-    /* Write display phase as a single byte (must not bleed into data area) */
+    /* Write display phase as a single byte */
     g_spi_buf[SCHWUNG_OFF_OUT_DISP_STAT] = (uint8_t)g_disp_phase;
 
-    if (g_disp_phase > 0) {
-        /* Phases 1-6: push pixel data chunks */
-        int chunk_idx = g_disp_phase - 1;
-        int offset = chunk_idx * SCHWUNG_OUT_DISP_CHUNK_LEN;
+    if (g_disp_phase == 0) {
+        /* Phase 0: signal new frame, zero data area */
+        memset(g_spi_buf + SCHWUNG_OFF_OUT_DISP_DATA, 0,
+               SCHWUNG_OUT_DISP_CHUNK_LEN);
+    } else {
+        /* Phases 1-6: push pixel data slices */
+        int slice = g_disp_phase - 1;
+        int offset = slice * SCHWUNG_OUT_DISP_CHUNK_LEN;
         int remaining = SCHWUNG_DISPLAY_SIZE - offset;
         int chunk_len = (remaining < SCHWUNG_OUT_DISP_CHUNK_LEN)
                       ? remaining : SCHWUNG_OUT_DISP_CHUNK_LEN;
