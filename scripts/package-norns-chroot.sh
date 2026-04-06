@@ -31,12 +31,14 @@ for fs in proc sys dev dev/pts tmp; do
     esac
 done
 
+# Ensure git safe.directory is set (must happen before any git commands)
+chroot "$CHROOT" su - move -c 'git config --global --add safe.directory /home/we/norns' 2>/dev/null || true
+
 # Step 1: Reset norns source to upstream
 echo ""
 echo "--- Resetting norns source ---"
 chrt -o 0 chroot "$CHROOT" su - move -c '
     cd /home/we/norns
-    git config --global --add safe.directory /home/we/norns
     git checkout -- matron/src/ crone/src/ wscript matron/wscript
 '
 
