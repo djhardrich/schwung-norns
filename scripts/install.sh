@@ -84,7 +84,8 @@ ssh "root@$DEVICE_HOST" "mkdir -p $REMOTE_MODULE/patches"
 scp "$REPO_ROOT/patches/apply-move-patches.sh" "root@$DEVICE_HOST:$REMOTE_MODULE/patches/"
 scp "$REPO_ROOT/scripts/setup-norns.sh" "root@$DEVICE_HOST:/data/setup-norns.sh"
 scp "$REPO_ROOT/scripts/package-norns-chroot.sh" "root@$DEVICE_HOST:/data/package-norns-chroot.sh"
-ssh "root@$DEVICE_HOST" "chmod +x $REMOTE_MODULE/patches/apply-move-patches.sh /data/setup-norns.sh /data/package-norns-chroot.sh"
+scp "$REPO_ROOT/scripts/build-sc-plugins.sh" "root@$DEVICE_HOST:$REMOTE_MODULE/scripts/build-sc-plugins.sh"
+ssh "root@$DEVICE_HOST" "mkdir -p $REMOTE_MODULE/scripts && chmod +x $REMOTE_MODULE/patches/apply-move-patches.sh $REMOTE_MODULE/scripts/build-sc-plugins.sh /data/setup-norns.sh /data/package-norns-chroot.sh"
 
 # ── Check if Norns is installed ──
 echo ""

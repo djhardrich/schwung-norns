@@ -156,20 +156,17 @@ chroot "$CHROOT" sh -c '
     done
 '
 
-# Build 64-bit plugins if not already present
-SC_PLUGIN_COUNT=$(chroot "$CHROOT" sh -c \
-    'find /home/we/.local/share/SuperCollider/Extensions -name "*.so" 2>/dev/null | wc -l')
-if [ "$SC_PLUGIN_COUNT" -lt 10 ]; then
-    echo "  Only $SC_PLUGIN_COUNT .so files found, building plugins..."
-    if [ -f "$MODULE_DIR/scripts/build-sc-plugins.sh" ]; then
-        cp "$MODULE_DIR/scripts/build-sc-plugins.sh" "$CHROOT/tmp/"
-        chrt -o 0 chroot "$CHROOT" su - move -c "sh /tmp/build-sc-plugins.sh"
-        rm -f "$CHROOT/tmp/build-sc-plugins.sh"
-    else
-        echo "WARN: build-sc-plugins.sh not found, skipping plugin build" >&2
-    fi
+# Build 64-bit plugins (always rebuild for release to ensure complete set)
+SC_PLUGIN_SCRIPT="$MODULE_DIR/scripts/build-sc-plugins.sh"
+if [ -f "$SC_PLUGIN_SCRIPT" ]; then
+    echo "  Building 64-bit SC plugins..."
+    cp "$SC_PLUGIN_SCRIPT" "$CHROOT/tmp/"
+    chrt -o 0 chroot "$CHROOT" su - move -c "sh /tmp/build-sc-plugins.sh"
+    rm -f "$CHROOT/tmp/build-sc-plugins.sh"
 else
-    echo "  $SC_PLUGIN_COUNT .so files already present, skipping build"
+    echo "ERROR: build-sc-plugins.sh not found at $SC_PLUGIN_SCRIPT" >&2
+    echo "  Re-run install.sh to deploy it to the device" >&2
+    exit 1
 fi
 
 # Step 7: Package
