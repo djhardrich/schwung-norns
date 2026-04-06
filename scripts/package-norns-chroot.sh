@@ -72,7 +72,7 @@ chrt -o 0 chroot "$CHROOT" su - move -c "cd /home/we/norns && sh patches/apply-m
 echo ""
 echo "--- Clean build ---"
 chrt -o 0 chroot "$CHROOT" su - move -c \
-    "cd /home/we/norns && python3 waf clean && python3 waf build"
+    "cd /home/we/norns && python3 waf configure && python3 waf clean && python3 waf build"
 
 # Step 4: Verify binaries
 echo ""
