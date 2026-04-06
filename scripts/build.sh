@@ -29,7 +29,8 @@ mkdir -p build/module
     src/dsp/norns_plugin.c \
     -o build/module/dsp.so \
     -Isrc/dsp \
-    -lpthread -lm
+    -lpthread -lm \
+    $(PKG_CONFIG_PATH=${PKG_CONFIG_PATH} pkg-config --cflags --libs jack 2>/dev/null || echo "-ljack")
 
 echo "=== Cross-compiling pw-helper ==="
 "${CROSS_PREFIX}gcc" -O2 -static \
@@ -39,12 +40,7 @@ echo "=== Cross-compiling pw-helper ==="
 echo "=== Cross-compiling norns-input-bridge ==="
 "${CROSS_PREFIX}gcc" -O2 -Wall \
     src/norns-input-bridge.c \
-    -o build/norns-input-bridge
-
-echo "=== Cross-compiling jack-fifo-bridge ==="
-"${CROSS_PREFIX}gcc" -O2 -Wall \
-    src/jack-fifo-bridge.c \
-    -o build/jack-fifo-bridge \
+    -o build/norns-input-bridge \
     $(PKG_CONFIG_PATH=${PKG_CONFIG_PATH} pkg-config --cflags --libs jack 2>/dev/null || echo "-ljack")
 
 echo "=== Assembling module package ==="
@@ -58,7 +54,6 @@ chmod +x build/module/start-norns.sh build/module/stop-norns.sh build/module/res
 mkdir -p build/module/bin
 cp build/pw-helper           build/module/bin/
 cp build/norns-input-bridge  build/module/bin/
-cp build/jack-fifo-bridge    build/module/bin/
 
 # ── Package ──
 mkdir -p dist
