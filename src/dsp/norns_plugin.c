@@ -45,10 +45,7 @@
 
 /* ── Constants ────────────────────────────────────────── */
 
-#define RING_SECONDS  1
-#define RING_SAMPLES  (MOVE_AUDIO_SAMPLE_RATE * 2 * RING_SECONDS)
 #define AUDIO_IDLE_MS 3000
-#define FIFO_PIPE_SZ  (128 * 1024)  /* 128KB kernel FIFO buffer — fallback only, SHM preferred */
 
 /* FIFOs are created at the resolved /tmp path (following symlinks).
  * On Move, /tmp → /var/tmp → /var/volatile/tmp.  The chroot bind-mounts
@@ -114,18 +111,9 @@ static uint64_t now_ms(void) {
 
 typedef struct {
     char module_dir[512];
-    char fifo_playback_path[256];
+    char fifo_playback_path[256];   /* kept for start_pw_chroot arg */
     char error_msg[256];
     int slot;
-
-    int fifo_playback_fd;
-
-    int16_t *ring;  /* heap-allocated ring buffer */
-    size_t write_pos;
-    uint64_t write_abs;
-    uint64_t play_abs;
-    uint8_t pending_bytes[4];
-    uint8_t pending_len;
 
     float gain;
     bool pw_running;
@@ -249,48 +237,7 @@ static void set_error(norns_instance_t *inst, const char *msg) {
     pw_log(msg);
 }
 
-/* ── Ring Buffer ──────────────────────────────────────── */
-
-static size_t ring_available(const norns_instance_t *inst) {
-    uint64_t avail;
-    if (!inst) return 0;
-    if (inst->write_abs <= inst->play_abs) return 0;
-    avail = inst->write_abs - inst->play_abs;
-    if (avail > (uint64_t)RING_SAMPLES) avail = (uint64_t)RING_SAMPLES;
-    return (size_t)avail;
-}
-
-static void ring_push(norns_instance_t *inst, const int16_t *samples, size_t n) {
-    size_t i;
-    uint64_t oldest;
-    for (i = 0; i < n; i++) {
-        inst->ring[inst->write_pos] = samples[i];
-        inst->write_pos = (inst->write_pos + 1) % RING_SAMPLES;
-        inst->write_abs++;
-    }
-    oldest = 0;
-    if (inst->write_abs > (uint64_t)RING_SAMPLES)
-        oldest = inst->write_abs - (uint64_t)RING_SAMPLES;
-    if (inst->play_abs < oldest)
-        inst->play_abs = oldest;
-}
-
-static size_t ring_pop(norns_instance_t *inst, int16_t *out, size_t n) {
-    size_t got, i;
-    uint64_t abs_pos;
-    if (!inst || !out || n == 0) return 0;
-    got = ring_available(inst);
-    if (got > n) got = n;
-    abs_pos = inst->play_abs;
-    for (i = 0; i < got; i++) {
-        out[i] = inst->ring[(size_t)(abs_pos % (uint64_t)RING_SAMPLES)];
-        abs_pos++;
-    }
-    inst->play_abs = abs_pos;
-    return got;
-}
-
-/* ── FIFO Management ──────────────────────────────────── */
+/* ── SHM Ring Management ─────────────────────────────── */
 
 static void ensure_chroot_tmp_bind(void) {
     /* The chroot's /tmp must be bind-mounted from the host's /tmp BEFORE
@@ -339,77 +286,39 @@ static void ensure_chroot_tmp_bind(void) {
     }
 }
 
-static int create_fifo(norns_instance_t *inst) {
-    struct stat st;
-
+static int create_shm_rings(norns_instance_t *inst) {
     if (!inst) return -1;
 
-    /* Ensure bind mount is in place before creating FIFOs */
-    ensure_chroot_tmp_bind();
-
+    /* Keep the playback path string for start_pw_chroot arg compatibility */
     snprintf(inst->fifo_playback_path, sizeof(inst->fifo_playback_path),
              FIFO_TMP_DIR "/pw-to-move-%d", inst->slot);
 
-    pw_log("create_fifo: creating FIFO");
-
-    /* Remove stale FIFO. If unlink fails (owned by another user), try
-     * opening the existing FIFO — it may still be usable. */
-    if (unlink(inst->fifo_playback_path) != 0 && errno != ENOENT) {
-        /* Can't remove — check if it's already a FIFO we can use */
-        if (stat(inst->fifo_playback_path, &st) == 0 && S_ISFIFO(st.st_mode)) {
-            pw_log("create_fifo: reusing existing FIFO");
-            inst->fifo_playback_fd = open(inst->fifo_playback_path, O_RDWR | O_NONBLOCK);
-            if (inst->fifo_playback_fd >= 0) {
-                (void)fcntl(inst->fifo_playback_fd, F_SETPIPE_SZ, FIFO_PIPE_SZ);
-                pw_log("create_fifo: reuse OK");
-                return 0;
-            }
-        }
-        set_error(inst, "cannot remove stale FIFO");
-        return -1;
-    }
-
-    if (mkfifo(inst->fifo_playback_path, 0666) != 0) {
-        set_error(inst, "mkfifo failed");
-        return -1;
-    }
-
-    inst->fifo_playback_fd = open(inst->fifo_playback_path, O_RDWR | O_NONBLOCK);
-    if (inst->fifo_playback_fd < 0) {
-        set_error(inst, "open FIFO failed");
-        (void)unlink(inst->fifo_playback_path);
-        return -1;
-    }
-
-    /* Increase kernel pipe buffer to reduce dropouts */
-    (void)fcntl(inst->fifo_playback_fd, F_SETPIPE_SZ, FIFO_PIPE_SZ);
-
-    pw_log("create_fifo: OK");
-
-    /* Create SHM ring for zero-copy audio (jack-fifo-bridge will use this) */
+    /* Create SHM ring for audio output (JACK callback writes, render_block reads) */
     snprintf(inst->shm_audio_path, sizeof(inst->shm_audio_path),
              SHM_AUDIO_PATH_FMT, inst->slot);
     {
         int shm_fd = open(inst->shm_audio_path,
                           O_RDWR | O_CREAT | O_TRUNC, 0666);
         if (shm_fd >= 0) {
-            (void)fchmod(shm_fd, 0666);  /* override umask */
+            (void)fchmod(shm_fd, 0666);
             if (ftruncate(shm_fd, SHM_AUDIO_FILE_SIZE) == 0) {
                 void *p = mmap(NULL, SHM_AUDIO_FILE_SIZE,
                                PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
                 if (p != MAP_FAILED) {
                     inst->shm_audio = (shm_audio_t *)p;
                     shm_audio_init(inst->shm_audio, MOVE_AUDIO_SAMPLE_RATE);
-                    pw_log("create_fifo: SHM ring created (zero-copy)");
+                    pw_log("create_shm_rings: audio output SHM created");
                 }
             }
             close(shm_fd);
         }
-        if (!inst->shm_audio)
-            pw_log("create_fifo: SHM setup failed, FIFO-only mode");
+        if (!inst->shm_audio) {
+            set_error(inst, "SHM audio setup failed");
+            return -1;
+        }
     }
 
-    /* Create audio INPUT SHM ring (Move mic/line → norns crone).
+    /* Create audio INPUT SHM ring (system capture → norns crone).
      * Always created but only written to when audio_in_enabled is set. */
     snprintf(inst->shm_audio_in_path, sizeof(inst->shm_audio_in_path),
              SHM_AUDIO_IN_PATH_FMT, inst->slot);
@@ -424,7 +333,7 @@ static int create_fifo(norns_instance_t *inst) {
                 if (p != MAP_FAILED) {
                     inst->shm_audio_in = (shm_audio_t *)p;
                     shm_audio_init(inst->shm_audio_in, MOVE_AUDIO_SAMPLE_RATE);
-                    pw_log("create_fifo: audio input SHM created");
+                    pw_log("create_shm_rings: audio input SHM created");
                 }
             }
             close(shm_fd);
@@ -434,7 +343,7 @@ static int create_fifo(norns_instance_t *inst) {
     return 0;
 }
 
-static void close_fifo(norns_instance_t *inst) {
+static void close_shm_rings(norns_instance_t *inst) {
     if (!inst) return;
     if (inst->shm_audio) {
         munmap(inst->shm_audio, SHM_AUDIO_FILE_SIZE);
@@ -448,13 +357,6 @@ static void close_fifo(norns_instance_t *inst) {
     }
     if (inst->shm_audio_in_path[0])
         (void)unlink(inst->shm_audio_in_path);
-    if (inst->fifo_playback_fd >= 0) {
-        close(inst->fifo_playback_fd);
-        inst->fifo_playback_fd = -1;
-    }
-    if (inst->fifo_playback_path[0] != '\0') {
-        (void)unlink(inst->fifo_playback_path);
-    }
 }
 
 /* ── MIDI FIFO Management ────────────────────────────── */
@@ -465,6 +367,9 @@ static int create_midi_fifos(norns_instance_t *inst) {
     int i;
 
     if (!inst) return -1;
+
+    /* Ensure bind mount is in place before creating FIFOs */
+    ensure_chroot_tmp_bind();
 
     snprintf(inst->fifo_midi_in_path, sizeof(inst->fifo_midi_in_path),
              FIFO_TMP_DIR "/midi-to-chroot-%d", inst->slot);
@@ -522,99 +427,6 @@ static void close_midi_fifos(norns_instance_t *inst) {
         (void)unlink(inst->fifo_midi_in_path);
     if (inst->fifo_midi_out_path[0] != '\0')
         (void)unlink(inst->fifo_midi_out_path);
-}
-
-/* ── Pipe Pump (FIFO → Ring Buffer) ──────────────────── */
-
-static void pump_pipe(norns_instance_t *inst) {
-    uint8_t buf[4096];
-    uint8_t merged[4100];
-    int16_t samples[2048];
-
-    if (!inst || inst->fifo_playback_fd < 0) return;
-
-    while (1) {
-        if (ring_available(inst) + 2048 >= (size_t)RING_SAMPLES) break;
-
-        ssize_t n = read(inst->fifo_playback_fd, buf, sizeof(buf));
-        if (n > 0) {
-            size_t merged_bytes = inst->pending_len;
-            size_t total_bytes, aligned_bytes, remainder;
-
-            if (inst->pending_len > 0)
-                memcpy(merged, inst->pending_bytes, inst->pending_len);
-            memcpy(merged + merged_bytes, buf, (size_t)n);
-            total_bytes = merged_bytes + (size_t)n;
-
-            /* jack-fifo-bridge writes S16LE interleaved stereo */
-            aligned_bytes = total_bytes & ~((size_t)3U);
-            remainder = total_bytes - aligned_bytes;
-            if (remainder > 0)
-                memcpy(inst->pending_bytes, merged + aligned_bytes, remainder);
-            inst->pending_len = (uint8_t)remainder;
-
-            {
-                size_t sample_count = aligned_bytes / sizeof(int16_t);
-                if (sample_count > 0) {
-                    memcpy(samples, merged, sample_count * sizeof(int16_t));
-                    ring_push(inst, samples, sample_count);
-                }
-            }
-
-            inst->last_audio_ms = now_ms();
-            inst->receiving_audio = true;
-
-            if ((size_t)n < sizeof(buf)) break;
-            continue;
-        }
-
-        break;
-    }
-
-    if (inst->receiving_audio && inst->last_audio_ms > 0) {
-        uint64_t now = now_ms();
-        if (now > inst->last_audio_ms && (now - inst->last_audio_ms) > AUDIO_IDLE_MS)
-            inst->receiving_audio = false;
-    }
-}
-
-/* ── MIDI Outbound Pump (chroot → Move) ──────────────── */
-
-static void pump_midi_out(norns_instance_t *inst) {
-    uint8_t tmp[512];
-    if (!inst || inst->fifo_midi_out_fd < 0) return;
-
-    while (1) {
-        size_t space = sizeof(inst->midi_out_buf) - inst->midi_out_buf_len;
-        if (space == 0) break;
-
-        ssize_t n = read(inst->fifo_midi_out_fd, tmp,
-                         space < sizeof(tmp) ? space : sizeof(tmp));
-        if (n <= 0) break;
-
-        memcpy(inst->midi_out_buf + inst->midi_out_buf_len, tmp, (size_t)n);
-        inst->midi_out_buf_len += (uint16_t)n;
-    }
-
-    size_t pos = 0;
-    while (pos + 2 <= inst->midi_out_buf_len) {
-        uint16_t msg_len = (uint16_t)inst->midi_out_buf[pos]
-                         | ((uint16_t)inst->midi_out_buf[pos + 1] << 8);
-        if (msg_len == 0) { pos += 2; continue; }
-        if (pos + 2 + msg_len > inst->midi_out_buf_len) break;
-
-        if (g_host && g_host->send_midi_internal)
-            g_host->send_midi_internal(inst->midi_out_buf + pos + 2, msg_len);
-        pos += 2 + msg_len;
-    }
-
-    if (pos > 0 && pos < inst->midi_out_buf_len) {
-        memmove(inst->midi_out_buf, inst->midi_out_buf + pos,
-                inst->midi_out_buf_len - pos);
-        inst->midi_out_buf_len -= (uint16_t)pos;
-    } else if (pos >= inst->midi_out_buf_len) {
-        inst->midi_out_buf_len = 0;
-    }
 }
 
 /* ── Screen FIFO Pump (matron → plugin) ──────────────── */
@@ -985,9 +797,7 @@ static void start_pw_chroot(norns_instance_t *inst) {
     pid_t pid = fork();
     if (pid == 0) {
         setsid();
-        /* Close all FIFOs so child/PipeWire don't inherit them */
-        if (inst->fifo_playback_fd >= 0)
-            close(inst->fifo_playback_fd);
+        /* Close all FIFOs so child processes don't inherit them */
         if (inst->fifo_midi_in_fd >= 0)
             close(inst->fifo_midi_in_fd);
         if (inst->fifo_midi_out_fd >= 0)
@@ -1021,7 +831,6 @@ static void stop_pw_chroot(norns_instance_t *inst) {
     if (pid == 0) {
         setsid();
         /* Close inherited fds */
-        if (inst->fifo_playback_fd >= 0) close(inst->fifo_playback_fd);
         if (inst->fifo_midi_in_fd >= 0) close(inst->fifo_midi_in_fd);
         if (inst->fifo_midi_out_fd >= 0) close(inst->fifo_midi_out_fd);
         if (inst->fifo_screen_fd >= 0) close(inst->fifo_screen_fd);
@@ -1050,11 +859,11 @@ static void check_pw_alive(norns_instance_t *inst) {
     if (!inst || !inst->pw_running) return;
 
     /* Non-blocking check: read PID file and test with kill(pid, 0) */
-    snprintf(pid_path, sizeof(pid_path), "/tmp/norns-pids-%d/pipewire.pid", inst->slot);
+    snprintf(pid_path, sizeof(pid_path), "/tmp/norns-pids-%d/jackd.pid", inst->slot);
     fd = open(pid_path, O_RDONLY);
     if (fd < 0) {
         inst->pw_running = false;
-        pw_log("PipeWire PID file not found");
+        pw_log("jackd PID file not found");
         return;
     }
     memset(pid_buf, 0, sizeof(pid_buf));
@@ -1063,7 +872,7 @@ static void check_pw_alive(norns_instance_t *inst) {
     pid = atoi(pid_buf);
     if (pid <= 0 || kill(pid, 0) != 0) {
         inst->pw_running = false;
-        pw_log("PipeWire process not found");
+        pw_log("jackd process not found");
     }
 }
 
@@ -1298,7 +1107,6 @@ static void *v2_create_instance(const char *module_dir, const char *json_default
     snprintf(inst->module_dir, sizeof(inst->module_dir), "%s",
              module_dir ? module_dir : ".");
     inst->gain = 1.0f;
-    inst->fifo_playback_fd = -1;
     inst->shm_audio = NULL;
     inst->shm_audio_in = NULL;
     inst->audio_in_enabled = false;
@@ -1324,17 +1132,8 @@ static void *v2_create_instance(const char *module_dir, const char *json_default
     inst->dither_threshold = 3; /* default: brightness > 3 = white */
     (void)json_defaults;
 
-    /* Heap-allocate ring buffer */
-    inst->ring = calloc(RING_SAMPLES, sizeof(int16_t));
-    if (!inst->ring) {
-        pw_log("create_instance: ring alloc failed");
-        free(inst);
-        return NULL;
-    }
-
-    if (create_fifo(inst) != 0) {
-        pw_log("create_instance: FIFO failed");
-        free(inst->ring);
+    if (create_shm_rings(inst) != 0) {
+        pw_log("create_instance: SHM ring setup failed");
         free(inst);
         return NULL;
     }
@@ -1389,13 +1188,12 @@ static void v2_destroy_instance(void *instance) {
     jack_client_shutdown(inst);
     stop_pw_chroot(inst);
     close_midi_fifos(inst);
-    close_fifo(inst);
+    close_shm_rings(inst);
     close_display_shm(inst);
 
     if (inst->fifo_screen_fd >= 0) close(inst->fifo_screen_fd);
     if (inst->fifo_grid_fd >= 0) close(inst->fifo_grid_fd);
 
-    free(inst->ring);
     free(inst);
     /* Don't decrement g_instance_counter — prevents slot collisions
      * if instances are created/destroyed out of order */
