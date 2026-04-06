@@ -178,6 +178,7 @@ typedef struct {
     jack_port_t *jack_midi_in;      /* from system:midi_capture */
     jack_port_t *jack_midi_out;     /* to system:midi_playback */
     uint64_t jack_retry_ms;         /* throttle connection attempts */
+    bool jack_ports_connected;      /* true once crone ports are wired */
 } norns_instance_t;
 
 static int g_instance_counter = 0;
@@ -1086,6 +1087,33 @@ static int jack_process_cb(jack_nframes_t nframes, void *arg) {
     return 0;
 }
 
+/* Try to wire our ports to crone.  Returns true if the audio connections
+ * succeeded (crone ports exist).  Safe to call repeatedly. */
+static bool jack_connect_ports(norns_instance_t *inst) {
+    if (!inst || !inst->jack_client) return false;
+
+    int ok = 0;
+    ok += (jack_connect(inst->jack_client, "crone:output_1",
+                        jack_port_name(inst->jack_audio_out_L)) == 0) ? 1 : 0;
+    ok += (jack_connect(inst->jack_client, "crone:output_2",
+                        jack_port_name(inst->jack_audio_out_R)) == 0) ? 1 : 0;
+    ok += (jack_connect(inst->jack_client, jack_port_name(inst->jack_audio_in_L),
+                        "crone:input_1") == 0) ? 1 : 0;
+    ok += (jack_connect(inst->jack_client, jack_port_name(inst->jack_audio_in_R),
+                        "crone:input_2") == 0) ? 1 : 0;
+    /* MIDI — best-effort, don't count towards success */
+    jack_connect(inst->jack_client, "system:midi_capture_1",
+                 jack_port_name(inst->jack_midi_in));
+    jack_connect(inst->jack_client, jack_port_name(inst->jack_midi_out),
+                 "system:midi_playback_1");
+
+    if (ok >= 4) {
+        inst->jack_ports_connected = true;
+        pw_log("JACK ports connected to crone");
+    }
+    return inst->jack_ports_connected;
+}
+
 static int jack_client_init(norns_instance_t *inst) {
     jack_status_t status;
     char name[32];
@@ -1138,19 +1166,8 @@ static int jack_client_init(norns_instance_t *inst) {
 
     pw_log("JACK client activated — connecting ports");
 
-    /* Connect ports (non-fatal if some fail — crone may not be ready yet) */
-    jack_connect(inst->jack_client, "crone:output_1",
-                 jack_port_name(inst->jack_audio_out_L));
-    jack_connect(inst->jack_client, "crone:output_2",
-                 jack_port_name(inst->jack_audio_out_R));
-    jack_connect(inst->jack_client, jack_port_name(inst->jack_audio_in_L),
-                 "crone:input_1");
-    jack_connect(inst->jack_client, jack_port_name(inst->jack_audio_in_R),
-                 "crone:input_2");
-    jack_connect(inst->jack_client, "system:midi_capture_1",
-                 jack_port_name(inst->jack_midi_in));
-    jack_connect(inst->jack_client, jack_port_name(inst->jack_midi_out),
-                 "system:midi_playback_1");
+    /* Try connecting now; if crone isn't ready yet, render_block retries. */
+    jack_connect_ports(inst);
 
     pw_log("JACK client init complete");
     return 0;
@@ -1465,12 +1482,15 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
     check_pw_alive(inst);
 
     /* Deferred JACK connection: crone won't have ports when plugin loads.
-     * Retry every ~1 second until connected. */
-    if (!inst->jack_client && inst->pw_running) {
+     * Retry every ~1 second until client is open AND ports are wired. */
+    if (inst->pw_running && (!inst->jack_client || !inst->jack_ports_connected)) {
         uint64_t now = now_ms();
         if (now - inst->jack_retry_ms > 1000) {
             inst->jack_retry_ms = now;
-            jack_client_init(inst);
+            if (!inst->jack_client)
+                jack_client_init(inst);
+            else if (!inst->jack_ports_connected)
+                jack_connect_ports(inst);
         }
     }
 
