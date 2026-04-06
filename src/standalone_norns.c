@@ -1033,6 +1033,11 @@ int main(int argc, char *argv[]) {
 
     log_msg("shutting down");
 
+    /* Kill norns-input-bridge FIRST while JACK is still alive.
+     * Once jackd dies it gets stuck in a JACK call and ignores SIGTERM. */
+    system("pkill -9 -x norns-input-bridge 2>/dev/null; "
+           "pkill -9 -x midi-bridge 2>/dev/null");
+
     /* Clean up */
     if (g_jack_client) {
         jack_deactivate(g_jack_client);
