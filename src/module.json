@@ -1,7 +1,7 @@
 {
   "id": "norns",
   "name": "Norns",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Monome Norns — SuperCollider + Lua sound computer on Move",
   "author": "DJ Hard Rich",
   "component_type": "tool",

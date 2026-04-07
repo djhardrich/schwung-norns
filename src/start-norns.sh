@@ -70,14 +70,21 @@ wait_for() {
         mount --bind /dev/shm "$CHROOT/dev/shm" || true
     fi
 
+    # Bind-mount RNBO JACK into the chroot (provides jackd binary + drivers).
+    # Chroot JACK clients use their own libjack (pipewire-jack from apt) to
+    # avoid BDB version mismatch; only the server binary and driver modules
+    # come from the host RNBO install.
+    RNBO_JACK="/opt/rnbo-jack"
+    if [ -d "/data/UserData/rnbo" ] && ! mountpoint -q "$CHROOT/$RNBO_JACK" 2>/dev/null; then
+        mkdir -p "$CHROOT/$RNBO_JACK"
+        mount --bind /data/UserData/rnbo "$CHROOT/$RNBO_JACK" || true
+    fi
+
     # Start RNBO jackd inside the chroot as the 'move' user.
-    # Must run in-chroot so JACK clients (crone, scsynth) share the same
-    # libjack/BDB version and can reach the server's Unix socket.
     # Uses dummy driver — actual audio I/O is via SHM rings between the
     # DSP plugin (host) and crone (chroot).  JACK only provides inter-process
     # routing for crone ↔ scsynth.
-    RNBO_JACK="/opt/rnbo-jack"
-    JACKD_CHROOT="$RNBO_JACK/jackd"
+    JACKD_CHROOT="$RNBO_JACK/bin/jackd"
     # In standalone mode (Move killed), enable JACK realtime scheduling.
     # In DSP mode, Move's watchdog kills RT processes it didn't start.
     JACK_RT_FLAG=""
@@ -89,8 +96,7 @@ wait_for() {
     fi
     if [ -x "$CHROOT/$JACKD_CHROOT" ] && ! chroot "$CHROOT" pgrep -x jackd >/dev/null 2>&1; then
         $CHRT_PREFIX chroot "$CHROOT" su - move -c "
-            export LD_LIBRARY_PATH=$RNBO_JACK
-            export JACK_DRIVER_DIR=$RNBO_JACK/jack
+            export JACK_DRIVER_DIR=$RNBO_JACK/lib/jack
             nohup $JACKD_CHROOT $JACK_RT_FLAG -d dummy -r 44100 -p 128 >/dev/null 2>&1 &
             echo \$! > /tmp/norns-pids-${SLOT}/jackd.pid
         "
@@ -110,9 +116,10 @@ wait_for() {
         done
     ' 2>/dev/null
 
-    # All chroot JACK clients must use the RNBO libjack to match the server's
-    # BDB version.  Set LD_LIBRARY_PATH for every su - move invocation.
-    JACK_ENV="export LD_LIBRARY_PATH=$RNBO_JACK; export XDG_RUNTIME_DIR=$RUNTIME_DIR"
+    # JACK clients (crone, matron, sclang) use the chroot's native libjack
+    # (pipewire-jack from apt). No LD_LIBRARY_PATH override needed — avoids
+    # BDB version mismatch between RNBO jackd server and chroot client libs.
+    JACK_ENV="export XDG_RUNTIME_DIR=$RUNTIME_DIR"
 
     # Start crone (JACK audio routing — must start before sclang)
     if [ -x "$CHROOT/home/we/norns/build/crone/crone" ]; then
