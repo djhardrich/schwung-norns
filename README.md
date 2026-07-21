@@ -10,43 +10,120 @@ Norns v0.4.3 can be installed and updated from the Schwung Store. The Store
 installs the module itself, but AbletonOS does not allow it to create the
 privileged helper or the Debian chroot that Norns needs.
 
-Before installing Norns from the Store:
+### Before you begin
 
-1. Install RNBO Takeover for Move.
-2. Install the Norns Debian chroot once. The quick installer below handles a
-   clean device, or you can keep an existing `/data/UserData/pw-chroot`.
-3. Install **Norns** from the Schwung Manager, then run the one-time bootstrap:
+- Install [Schwung](https://github.com/charlesvestal/schwung-installer). Its
+  desktop installer can also configure SSH access to Move.
+- Connect Move and your computer to the same network.
+- Confirm that this works from Terminal:
+
+```bash
+ssh root@move.local 'echo "Move SSH is ready"'
+```
+
+If `move.local` does not resolve, replace it with Move's IP address in SSH
+commands and pass the address to the quick installer as
+`DEVICE_HOST=192.168.x.x`.
+
+### 1. Install RNBO Move Takeover
+
+Norns uses the modified JACK2 audio server included with RNBO Move Takeover.
+The **RNBO Runner** entry included with Schwung is a launcher for an installed
+RNBO runtime; it does not install RNBO Takeover itself.
+
+1. Make sure Move is running firmware 1.5.1 or later.
+2. Download the newest Ableton Move `.swu` from the official
+   [RNBO Move releases](https://cycling74.com/releases/rnbo-move) page.
+3. With Move running and on the same network, open
+   [Move Manager's update page](http://move.local/testing/update).
+4. Select the downloaded `.swu`, start the update, and wait for Move to finish.
+5. Optionally verify the JACK server from Terminal:
+
+```bash
+ssh root@move.local 'test -x /data/UserData/rnbo/bin/jackd && echo "RNBO is ready" || echo "RNBO is missing"'
+```
+
+See Cycling '74's [RNBO Move setup guide](https://rnbo.cycling74.com/learn/move-intro-and-setup)
+if the update page is unavailable. Max and an RNBO license are not required to
+run Norns; they are only needed if you want to author and export RNBO patches.
+
+### 2. Install or reuse the Debian chroot
+
+The chroot is a persistent Debian userspace stored at
+`/data/UserData/pw-chroot`. It is not Docker and it does not replace Move's
+firmware. Norns runs `matron`, `crone`, SuperCollider, and its supporting Linux
+packages inside this directory while sharing Move's existing Linux kernel.
+
+Check whether it is already present:
+
+```bash
+ssh root@move.local 'test -d /data/UserData/pw-chroot/usr && echo "Norns chroot is ready" || echo "Norns chroot is missing"'
+```
+
+#### New Move or no existing chroot
+
+Run the quick installer from a macOS or Linux Terminal. It needs `git`, `curl`,
+`tar`, `ssh`, and `scp`; these are included with macOS after installing the
+Command Line Tools and are available from normal Linux package managers.
+
+```bash
+git clone https://github.com/timncox/schwung-norns.git
+cd schwung-norns
+./quickinstall-norns.sh
+```
+
+For a Move with a different hostname or an IP address:
+
+```bash
+DEVICE_HOST=192.168.x.x ./quickinstall-norns.sh
+```
+
+The first run downloads and transfers an approximately 384 MB Debian image,
+installs the privileged helper and the Norns module, and finishes the Norns
+setup inside the chroot. Leave Move powered on and keep both devices connected
+to the network. The final setup can take 10-30 minutes. You do not need Docker
+when using the prebuilt release; Docker is only needed to build the ARM64
+module from source.
+
+#### Existing `/data/UserData/pw-chroot`
+
+You can run the same quick installer. When it finds
+`/data/UserData/pw-chroot/usr`, it keeps that root filesystem and skips the
+384 MB chroot transfer, then installs or updates the Norns integration.
+
+Alternatively, install **Norns** from the Schwung Manager and run the one-time
+privileged bootstrap:
 
 ```bash
 ssh root@move.local 'sh /data/UserData/schwung/modules/tools/norns/bootstrap-norns.sh'
 ```
 
-After the bootstrap, future Norns module updates can be installed directly
-from the Store. The bootstrap command is also shown on Move after installation.
+The bootstrap installs the helper that the unprivileged Store cannot create and
+finishes the Norns setup in the existing chroot. The same command is shown on
+Move after Store installation.
+
+### 3. Verify and launch
+
+This check reports each required part separately:
+
+```bash
+ssh root@move.local '
+test -x /data/UserData/rnbo/bin/jackd && echo "RNBO: ready" || echo "RNBO: missing"
+test -d /data/UserData/pw-chroot/usr && echo "chroot: ready" || echo "chroot: missing"
+test -x /data/UserData/schwung/bin/pw-helper-norns && echo "Norns helper: ready" || echo "Norns helper: missing"
+'
+```
+
+Open Schwung on Move and choose **Tools > Norns**. After the one-time setup,
+future Norns module updates can be installed directly from the Schwung Store.
 
 v0.4.3 was tested on Move firmware 2.1.0b2 with Schwung 0.11.6 and RNBO
 1.4.3-alpha.1.
 
-## Quick Install Instructions (tested with Linux and macOS)
+## Build and install from source
 
-1. Install [Schwung](https://github.com/charlesvestal/schwung-installer) and
-   RNBO Takeover for Move.
-2. Run the quick install script:
-
-```bash
-./quickinstall-norns.sh
-```
-
-## Prerequisites
-
-1. **[Schwung](https://github.com/charlesvestal/schwung)** — the host runtime that loads third-party modules on Move hardware.
-
-2. **Debian chroot** — provided by the quick installer or an existing
-   schwung-chroot-linux installation at `/data/UserData/pw-chroot`.
-
-3. **[RNBO Takeover for Move](https://cycling74.com/products/rnbo)** — provides the JACK2 audio server (`/data/UserData/rnbo/bin/jackd`) that norns connects to for audio and MIDI I/O. Must be installed before running schwung-norns.
-
-## Install
+The commands below are for developers. Most users should use the prebuilt quick
+installer or Schwung Store instructions above.
 
 ```bash
 # Build the module (requires Docker for ARM64 cross-compilation)
