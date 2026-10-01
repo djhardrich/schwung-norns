@@ -695,6 +695,19 @@ end
 init_norns()
 MATRONRC
 
+# ── 11. Mute Input Level by default (Move's line-in floats noisy) ──
+# Unlike real norns hardware, Move's line-in ADC has no connected-source
+# detection; left floating (nothing plugged in) it picks up loud,
+# intermittent noise -- measured hitting full digital scale. Real norns
+# ships this at 0dB (unity) since its own input hardware doesn't have
+# this problem; on Move that would blast noise on every fresh boot
+# before a user ever finds the SYSTEM > AUDIO > LEVELS > INPUT menu that
+# controls it. Muting the default here only affects a from-scratch
+# install -- once a user raises it, norns saves that choice to
+# system.state and restores it on every later boot, same as stock norns.
+sed -i "s/state.mix.input = 0/state.mix.input = -math.huge/" lua/core/state.lua
+echo "  Set default Input Level to muted (was 0dB/unity) -- see SYSTEM > AUDIO > LEVELS > INPUT"
+
 echo ""
 echo "=== Patches applied ==="
 echo "Now rebuild:"

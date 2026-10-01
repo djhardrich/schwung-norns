@@ -934,10 +934,20 @@ static void process_audio(void) {
         }
     }
 
-    /* SPI audio in is NOT forwarded to crone — doing so would create a
-     * hardware feedback loop (mic -> crone -> speaker -> mic).
-     * Audio input for norns scripts comes via JACK directly. */
-    (void)spi_in;
+    /* SPI audio in (Move line/mic input) -> ring_in -> crone input.
+     * Mirrors the ring_out path above. Always on: there's no hardware
+     * signal available (checked the SPI buffer layout, the Pi's own
+     * GPIOs, and ALSA/extcon -- none exist) that says whether something
+     * is actually connected, and a level-based gate isn't reliable either
+     * (floating input noise gets as loud and sustained as real audio).
+     * Safety belongs at norns' own Input Level control instead (crone's
+     * single adc gain stage, SYSTEM > AUDIO > LEVELS > INPUT) -- see the
+     * state.lua default patch in apply-move-patches.sh. */
+    if (g_ring_in) {
+        int16_t buf[256];  /* 128 stereo frames */
+        memcpy(buf, spi_in, SCHWUNG_AUDIO_FRAMES * 2 * sizeof(int16_t));
+        shm_write(g_ring_in, buf, SCHWUNG_AUDIO_FRAMES);
+    }
 }
 
 /* ── Main ── */
